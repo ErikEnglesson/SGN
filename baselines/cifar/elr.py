@@ -421,41 +421,24 @@ def main(argv):
         """Training StepFn."""
         def step_fn(inputs, preds_buffer):
             """Per-Replica StepFn."""
+
+            # Extract images, labels, and indices for the examples in the batch.
             images = inputs['features']
             labels = inputs['noisy_labels'] if FLAGS.noisy_labels else inputs['labels']
             indices = tf.map_fn(
                 get_element_id, inputs['id'], fn_output_signature=tf.int64)
 
-            # tf.print("inputs[labels]:", inputs['labels'], tf.math.reduce_max(inputs['labels']))
-            # tf.print("inputs[noisy_labels]:", inputs['noisy_labels'], tf.math.reduce_max(inputs['noisy_labels']))
-            # tf.print("labels:", labels)
-
-            """
-      print("\n")
-      #print("inputs.keys():", inputs.keys())
-      #tf.print("id:", inputs['id'])
-      #tf.print("enumearte_add_per_step_id", inputs['_enumerate_added_per_step_id'])
-      #tf.print("element_id", inputs['element_id'])
-      #print('train_36871' == inputs['id'])
-      index = tf.where('train_36871' == inputs['id'])
-      
-      if not tf.equal(tf.size(index), 0):
-          tf.print(tf.size(index))
-          tf.print(index[0])
-          tf.print(index[0][0])
-          tf.print(inputs['features'][index[0][0], :, :, 0])
-          tf.print("label:", inputs['labels'][index[0][0]])
-          tf.print("noisy label:", inputs['noisy_labels'][index[0][0]])
-          tf.print("element_id:", inputs['element_id'][index[0][0]])
-          tf.print("id:", inputs['id'][index[0][0]])
-
-      print("\n")
-      """
             if FLAGS.augmix and FLAGS.aug_count >= 1:
                 # Index 0 at augmix processing is the unperturbed image.
                 # We take just 1 augmented image from the returned augmented images.
                 images = images[:, 1, ...]
+
+    
             with tf.GradientTape() as tape:
+                # -----------------------------------------------------------------------------
+                # A re-implementation of ELR in TensorFlow directly based on the official code:
+                # https://github.com/shengliu66/ELR/blob/master/ELR/model/loss.py#L21
+                # -----------------------------------------------------------------------------
                 logits = model(images, training=True)
                 preds = tf.nn.softmax(logits, axis=1)
                 preds = tf.clip_by_value(preds, 1e-4, 1-1e-4)

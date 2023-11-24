@@ -130,16 +130,14 @@ def _parse_hyperparameters(l2: float, hps: Dict[str, float]):
         return {k: l2 for k in HP_KEYS}
 
 
-def wide_resnet_logitnormal(
+def wide_resnet(
         input_shape: Iterable[int],
         depth: int,
         width_multiplier: int,
         num_classes: int,
         l2: float,
         version: int,
-        temperature: float,
         num_factors: int,
-        num_mc_samples: int = 5000,
         multiclass: bool = True,
         eps: float = 1e-5,
         no_scale: bool = False,
@@ -163,13 +161,9 @@ def wide_resnet_logitnormal(
       l2: L2 regularization coefficient.
       version: 1, indicating the original ordering from He et al. (2015); or 2,
         indicating the preactivation ordering from He et al. (2016).
-      temperature: Float or scalar `Tensor` representing the softmax
-        temperature.
       num_factors: Integer. Number of factors to use in approximation to full
         rank covariance matrix. If num_factors <= 0, then the diagonal covariance
         method MCSoftmaxDense is used.
-      num_mc_samples: The number of Monte-Carlo samples used to estimate the
-          predictive distribution.
       multiclass: Boolean. If True then return a multiclass classifier, otherwise
         a multilabel classifier.
       eps: Float. Clip probabilities into [eps, 1.0] softmax or
@@ -222,30 +216,6 @@ def wide_resnet_logitnormal(
     x = tf.keras.layers.AveragePooling2D(pool_size=8)(x)
     x = tf.keras.layers.Flatten()(x)
 
-    """
-  het_layer_args = {'temperature': temperature,
-                    'train_mc_samples': num_mc_samples,
-                    'test_mc_samples': num_mc_samples,
-                    'share_samples_across_batch': True,
-                    'logits_only': True, 'eps': eps,
-                    'dtype': tf.float32, 'name': 'fc100',
-                    'kernel_regularizer': l2_reg(hps['dense_kernel_l2']),
-                    'bias_regularizer': l2_reg(hps['dense_bias_l2'])}
-  if multiclass:
-    het_layer_args.update({'num_classes': num_classes})
-    if num_factors <= 0:
-      output_layer = ed.layers.MCSoftmaxDense(**het_layer_args)
-    else:
-      het_layer_args.update({'num_factors': num_factors})
-      output_layer = ed.layers.MCSoftmaxDenseFA(**het_layer_args)
-  else:
-    het_layer_args.update({'num_outputs': num_classes,
-                           'num_factors': num_factors})
-    output_layer = ed.layers.MCSigmoidDenseFA(**het_layer_args)
-
-  x = output_layer(x)
-  """
-
     kernel_regularizer = l2_reg(hps['dense_kernel_l2'])
     bias_regularizer = l2_reg(hps['dense_bias_l2'])
     dtype = tf.float32
@@ -270,7 +240,7 @@ def wide_resnet_logitnormal(
     if no_scale:
         return tf.keras.Model(
             inputs=inputs,
-            outputs=loc,  # logit_normal,
+            outputs=loc,  
             name='wide_resnet-{}-{}'.format(depth, width_multiplier))
     else:
         scale = tf.keras.layers.Dense(scale_size,
@@ -282,7 +252,7 @@ def wide_resnet_logitnormal(
 
         return tf.keras.Model(
             inputs=inputs,
-            outputs=(loc, scale),  # logit_normal,
+            outputs=(loc, scale), 
             name='wide_resnet-{}-{}'.format(depth, width_multiplier))
 
 
@@ -290,13 +260,11 @@ def create_model(
         batch_size: Optional[int],
         depth: int,
         width_multiplier: int,
-        temperature: float,
         num_factors: int,
         input_shape: Iterable[int] = (32, 32, 3),
         num_classes: int = 10,
         l2_weight: float = 0.0,
         version: int = 1,
-        num_mc_samples: int = 5000,
         multiclass: bool = True,
         eps: float = 1e-5,
         no_scale: bool = False,
@@ -305,17 +273,15 @@ def create_model(
         **unused_kwargs: Dict[str, Any]) -> tf.keras.models.Model:
     """Creates model."""
     del batch_size  # unused arg
-    return wide_resnet_logitnormal(input_shape=input_shape,
-                                   depth=depth,
-                                   width_multiplier=width_multiplier,
-                                   num_classes=num_classes,
-                                   l2=l2_weight,
-                                   version=version,
-                                   temperature=temperature,
-                                   num_factors=num_factors,
-                                   num_mc_samples=num_mc_samples,
-                                   multiclass=multiclass,
-                                   eps=eps,
-                                   no_scale=no_scale,
-                                   apply_sigma_activation=apply_sigma_activation,
-                                   no_dummy=False)
+    return wide_resnet(input_shape=input_shape,
+                        depth=depth,
+                        width_multiplier=width_multiplier,
+                        num_classes=num_classes,
+                        l2=l2_weight,
+                        version=version,
+                        num_factors=num_factors,
+                        multiclass=multiclass,
+                        eps=eps,
+                        no_scale=no_scale,
+                        apply_sigma_activation=apply_sigma_activation,
+                        no_dummy=False)

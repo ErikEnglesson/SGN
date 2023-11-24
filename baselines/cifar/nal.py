@@ -77,6 +77,20 @@ flags.DEFINE_float('dense_kernel_l2', None,
                    'L2 reg. coefficient for the kernel of the dense layer.')
 flags.DEFINE_float('dense_bias_l2', None,
                    'L2 reg. coefficient for the bias of the dense layer.')
+flags.DEFINE_float('beta', 0.7,
+                   'early learning regularization beta.'
+                   ' for more information refer to '
+                   'https://github.com/shengliu66/ELR'
+                   'default value is taken from'
+                   'https://github.com/shengliu66/ELR/blob/master/ELR/config_cifar10.json')
+
+flags.DEFINE_float('reg_scale', 3.0,
+                   'early learning regularization lambda.'
+                   ' for more information refer to '
+                   'https://github.com/shengliu66/ELR'
+                   'default value is taken from'
+                   'https://github.com/shengliu66/ELR/blob/master/ELR/config_cifar10.json')
+
 
 flags.DEFINE_bool('collect_profile', False,
                   'Whether to trace a profile with tensorboard')
@@ -114,11 +128,6 @@ flags.DEFINE_bool('constant_lr', False,
 
 flags.DEFINE_bool('cosine_lr', False,
                   'Whether to use cosine learning rate.')
-
-# SOP HPs
-flags.DEFINE_float('lr_u', 1.0, 'Learining rate for update of buffer u.')
-flags.DEFINE_float('lr_v', 10.0, 'Learning rate for update of buffer v.')
-
 
 FLAGS = flags.FLAGS
 
@@ -311,7 +320,7 @@ def main(argv):
             input_shape=(32, 32, 3),
             depth=28,
             width_multiplier=FLAGS.width,
-            num_classes=num_classes,
+            num_classes=num_classes+1,  # +1 is for tau
             l2=FLAGS.l2,
             hps=_extract_hyperparameter_dictionary(),
             seed=seeds[1])
@@ -408,9 +417,9 @@ def main(argv):
             initial_epoch = FLAGS.train_epochs - 1  # Run just one epoch of eval
 
     @tf.function
-    def train_step(iterator):
+    def train_step(iterator, preds_buffer):
         """Training StepFn."""
-        def step_fn(inputs):
+        def step_fn(inputs, preds_buffer):
             """Per-Replica StepFn."""
             images = inputs['features']
             labels = inputs['noisy_labels'] if FLAGS.noisy_labels else inputs['labels']
@@ -422,51 +431,61 @@ def main(argv):
                 # We take just 1 augmented image from the returned augmented images.
                 images = images[:, 1, ...]
             with tf.GradientTape() as tape:
-                # -----------------------------------------------------------------------------
-                # A re-implementation of SOP in TensorFlow directly based on the official code:
-                # https://github.com/shengliu66/SOP/blob/main/model/loss.py#L55
-                # -----------------------------------------------------------------------------
-                logits = model(images, training=True)
+                # ------------------------------------------------------------------------------
+                # A re-implementation of NAL in TensorFlow directly based on the official code:
+                # https://github.com/MacLLL/NAL/blob/main/loss.py#L26
+                #
+                # Comment: The official implementation included several additional parts, e.g., 
+                # not updating labels until a certain epoch, not updating the label buffer 
+                # every epoch, and only updating labels if tau was above some confidence
+                # threshold. As all these extra steps requires additional hyperparameters, and 
+                # that these steps are not mentioned in the original paper, we deemed them 
+                # insignificant. Note that such extra steps could, but are not, used by
+                # ELR, SOP, or SGN either.
+                # ------------------------------------------------------------------------------
+                logitsh = model(images, training=True)
+                logits, h = tf.split(logitsh, [num_classes, 1], axis=1)
 
-                eps = 1e-4
+                tau = tf.nn.sigmoid(h)
+                preds = tf.nn.softmax(logits, axis=1)
                 one_hot_labels = tf.one_hot(
                     tf.cast(labels, tf.int32), num_classes)
 
-                U_square = tf.gather(buffer_u, indices) ** 2 * one_hot_labels
-                V_square = tf.gather(
-                    buffer_v, indices) ** 2 * (1.0-one_hot_labels)
+                preds_clipped = tf.clip_by_value(preds, 1e-12, 1-1e-12)
+                tau_clipped = tf.clip_by_value(tau, 1e-12, 1-1e-12)
+                one_hot_labels = tf.clip_by_value(one_hot_labels, 1e-4, 1.0)
 
-                U_square = tf.clip_by_value(U_square, 0.0, 1.0)
-                V_square = tf.clip_by_value(V_square, 0.0, 1.0)
+                # Update label buffer
+                preds_ = tf.stop_gradient(preds)
+                preds_buffer_update = tf.gather(preds_buffer, indices)
+                preds_buffer_update = FLAGS.beta*preds_buffer_update + \
+                    (1-FLAGS.beta) * preds_
+                preds_buffer_update = tf.clip_by_value(
+                    preds_buffer_update, 1e-4, 1)
+                indices = tf.expand_dims(indices, axis=1)
+                preds_buffer = tf.tensor_scatter_nd_update(
+                    preds_buffer, indices, preds_buffer_update)
+                max_indices = tf.reduce_max(indices)
 
-                original_prediction = tf.nn.softmax(logits, axis=1)
-                prediction = tf.math.maximum(
-                    original_prediction + U_square - tf.stop_gradient(V_square), eps)
-                prediction = prediction / \
-                    tf.math.maximum(tf.norm(prediction, ord=1), eps)
-                prediction = tf.clip_by_value(prediction, eps, 1.0)
+                # Calculate NAL loss terms
+                preds_combined = tau_clipped * preds_clipped + \
+                    (1 - tau_clipped) * preds_buffer_update
+                preds_combined = tf.clip_by_value(preds_combined, 1e-7, 1.0)
 
-                pred_one_hot = tf.one_hot(tf.math.argmax(tf.stop_gradient(
-                    logits), axis=1, output_type=tf.int32), num_classes)
-                MSE_loss = tf.reduce_mean(tf.reduce_sum(
-                    tf.square(one_hot_labels - (pred_one_hot + U_square - V_square)), axis=1))
-                negative_log_likelihood = tf.reduce_mean(tf.keras.losses.categorical_crossentropy(
-                    one_hot_labels, prediction, from_logits=False))
+                negative_log_likelihood = tf.reduce_mean(
+                    tf.keras.losses.categorical_crossentropy(
+                        preds_buffer_update,
+                        preds_combined,
+                        from_logits=False))
+                nal_loss = -tf.reduce_mean(tf.math.log(tau_clipped))
 
                 l2_loss = sum(model.losses)
-                loss = negative_log_likelihood + l2_loss + MSE_loss
+                loss = negative_log_likelihood + l2_loss + FLAGS.reg_scale * nal_loss
                 # Scale the loss given the TPUStrategy will reduce sum all gradients.
                 scaled_loss = loss / strategy.num_replicas_in_sync
 
-            # SGD update of buffers
-            [grads, grads_u, grads_v] = tape.gradient(
-                scaled_loss, [model.trainable_variables, buffer_u, buffer_v])
+            grads = tape.gradient(scaled_loss, model.trainable_variables)
             optimizer.apply_gradients(zip(grads, model.trainable_variables))
-            
-            buffer_u.scatter_add(
-                tf.IndexedSlices(-grads_u.values * FLAGS.lr_u, grads_u.indices))
-            buffer_v.scatter_add(
-                tf.IndexedSlices(-grads_v.values * FLAGS.lr_v, grads_v.indices))
 
             probs = tf.nn.softmax(logits)
             metrics['train/ece'].add_batch(probs, label=labels)
@@ -491,10 +510,15 @@ def main(argv):
                     tl_labels_corrupted, probs_corrupted)
                 metrics['train/accuracy_nl_corrupted'].update_state(
                     nl_labels_corrupted, probs_corrupted)
+            return preds_buffer, max_indices
 
+        max_indices = tf.constant(-1, dtype=tf.int64)
+        step_max_indices = tf.constant(-1, dtype=tf.int64)
         for _ in tf.range(tf.cast(steps_per_epoch, tf.int32)):
-            strategy.run(
-                step_fn, args=(next(iterator),))
+            preds_buffer, step_max_indices = strategy.run(
+                step_fn, args=(next(iterator), preds_buffer))
+            max_indices = tf.maximum(max_indices, step_max_indices)
+        return preds_buffer, max_indices
 
     @tf.function
     def test_step(iterator, dataset_split, dataset_name, num_steps):
@@ -504,8 +528,9 @@ def main(argv):
             images = inputs['features']
             labels = inputs['labels']
             labels_noisy = inputs['noisy_labels'] if FLAGS.noisy_labels and dataset_split == 'validation' else inputs['labels']
-            logits = model(images, training=False)
-            probs = tf.nn.softmax(logits)
+            logitsh = model(images, training=False)
+            logits, _ = tf.split(logitsh, [num_classes, 1], axis=1)
+            probs = tf.nn.softmax(logits, axis=1)
 
             negative_log_likelihood = tf.reduce_mean(
                 tf.keras.losses.sparse_categorical_crossentropy(labels, probs))
@@ -551,6 +576,33 @@ def main(argv):
             strategy.run(step_fn, args=(next(iterator),))
 
     @tf.function
+    def buffer_init_step(iterator, preds_buffer):
+        """Buffer initialization StepFn."""
+        def step_fn(inputs, preds_buffer):
+            """Per-Replica StepFn."""
+            labels = inputs['noisy_labels'] if FLAGS.noisy_labels else inputs['labels']
+            indices = tf.map_fn(
+                get_element_id, inputs['id'], fn_output_signature=tf.int64)
+
+            one_hot_labels = tf.one_hot(tf.cast(labels, tf.int32), num_classes)
+
+            # Initialize label/preds buffer
+            indices = tf.expand_dims(indices, axis=1)
+            preds_buffer = tf.tensor_scatter_nd_update(
+                preds_buffer, indices, one_hot_labels)
+            max_indices = tf.reduce_max(indices)
+
+            return preds_buffer, max_indices
+
+        max_indices = tf.constant(-1, dtype=tf.int64)
+        step_max_indices = tf.constant(-1, dtype=tf.int64)
+        for _ in tf.range(tf.cast(steps_per_epoch, tf.int32)):
+            preds_buffer, step_max_indices = strategy.run(
+                step_fn, args=(next(iterator), preds_buffer))
+            max_indices = tf.maximum(max_indices, step_max_indices)
+        return preds_buffer, max_indices
+
+    @tf.function
     def cifar10h_test_step(iterator, num_steps):
         """Evaluation StepFn."""
         def step_fn(inputs):
@@ -582,12 +634,14 @@ def main(argv):
     metrics.update({'train/ms_per_example': tf.keras.metrics.Mean()})
 
     train_iterator = iter(train_dataset)
+    # ? shape and init location unknown
+    preds_buffer = tf.zeros(shape=(50000, num_classes))
 
-    # SOP Buffers
-    buffer_u = tf.Variable(tf.random.normal(
-        (50000, 1), stddev=1e-8), dtype=tf.float32)
-    buffer_v = tf.Variable(tf.random.normal(
-        (50000, num_classes), stddev=1e-8), dtype=tf.float32)
+    # Initialize preds_buffer to be the onehot labels.
+    preds_buffer, max_indices = buffer_init_step(
+        train_iterator, preds_buffer)
+    assert max_indices < preds_buffer.shape[0], f"there is an error in indexing preds_buffer.shape[0] must be bigger "\
+        f"than max_indices but {preds_buffer.shape[0]}<{max_indices}"
 
     start_time = time.time()
     tb_callback = None
@@ -602,13 +656,11 @@ def main(argv):
             tb_callback.on_epoch_begin(epoch)
         if not FLAGS.eval_only:
             train_start_time = time.time()
-            train_step(train_iterator)
+            preds_buffer, max_indices = train_step(
+                train_iterator, preds_buffer)
+            assert max_indices < preds_buffer.shape[0], f"there is an error in indexing preds_buffer.shape[0] must be bigger "\
+                f"than max_indices but {preds_buffer.shape[0]}<{max_indices}"
 
-            logging.info(
-                f"min max buffer_u: [{tf.reduce_min(buffer_u):.2E}, {tf.reduce_max(buffer_u):.2E}]")
-
-            logging.info(
-                f"min max buffer_v: [{tf.reduce_min(buffer_v):.2E}, {tf.reduce_max(buffer_v):.2E}]")
 
             ms_per_example = (
                 time.time() - train_start_time) * 1e6 / batch_size

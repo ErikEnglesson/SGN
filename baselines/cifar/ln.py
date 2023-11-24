@@ -35,7 +35,7 @@ import utils  # local file import
 import ood_utils  # local file import
 from label_corrupted_dataset import make_label_corrupted_dataset # local file import
 
-from wide_resnet_logitnormal_factors import wide_resnet_logitnormal # local file import
+from wide_resnet_factors import wide_resnet # local file import
 
 
 flags.register_validator('train_proportion',
@@ -66,8 +66,6 @@ flags.DEFINE_bool('collect_profile', False,
 # Heteroscedastic flags.
 flags.DEFINE_float('temperature', 1.0, # 1.3
                    'Temperature for heteroscedastic head.')
-flags.DEFINE_integer('num_mc_samples', 2000, # 10k
-                     'Num MC samples for heteroscedastic layer.')
 flags.DEFINE_float('min_scale', 1.0,
                    'Added constant to the predicted scale parameters.')
 flags.DEFINE_float('max_scale', 1.0,
@@ -75,17 +73,6 @@ flags.DEFINE_float('max_scale', 1.0,
 flags.DEFINE_bool('mu_as_pred', False,
                   'Whether to use mu instead of average of samples as pred.')
 flags.DEFINE_float('grad_clip_norm', -1.0, 'Global gradient clipping')
-flags.DEFINE_bool('no_scale', False, 'Whether to use the predicted scale or not')
-
-
-# LN2 flags
-flags.DEFINE_bool('estimate_delta', False,
-                  'Whether to have an exponential moving average (EMA) network estimate label noise (delta).')
-flags.DEFINE_float(
-    'alpha', 0.98, 'Exponential moving average weight for label estimation.')
-flags.DEFINE_float(
-    'beta', 0.999, 'Exponential moving average weight for parameters of delta model.')
-
 
 
 # OOD flags.
@@ -126,70 +113,52 @@ flags.DEFINE_bool('constant_lr', False,
 
 FLAGS = flags.FLAGS
 
-def get_dim_logits(num_classes):
-    return num_classes-1
+
+def _create_logitnormal(loc, scale, min_scale, num_classes, labels=None):
+  # Create the Logit-Normal Distribution
+  loc = tf.ensure_shape(loc, [None, num_classes])
+  scale = tf.ensure_shape(scale, [None, num_classes])
+  scale = tf.reshape(scale, [-1, num_classes, 1])
 
 
-def get_smoothed_onehot(labels, num_classes):
-    dim = num_classes
-    one_hot_labels = tf.one_hot(tf.cast(labels, tf.int32), dim)
-    smoothed_targets = (1.0-FLAGS.label_smoothing) * one_hot_labels + \
-        FLAGS.label_smoothing * tf.ones(tf.shape(one_hot_labels)) / float(dim)
-    return smoothed_targets
+  #scale = tf.squeeze(scale) if scale is not None else scale
+  diag = min_scale * tf.ones([tf.shape(loc)[0], num_classes])
 
 
-def clr_inv(p):
-    z = tf.math.log(p)
-    return z - tf.reduce_mean(z, axis=1)[:, tf.newaxis]
+  mvn = tfd.MultivariateNormalDiagPlusLowRank(loc=loc,
+                                              scale_diag=diag,
+                                              scale_perturb_factor=scale,
+                                              validate_args=False,
+                                              allow_nan_stats=False) # Debug
+
+  #print("lr_decay_epochs:", FLAGS.lr_decay_epochs) 
+  #print("diag:", diag)
+  #print("scale:", scale)
+  #print("cov:", tf.math.reduce_min(tf.linalg.diag_part(mvn.covariance())), tf.math.reduce_mean(tf.linalg.diag_part(mvn.covariance())), tf.math.reduce_max(tf.linalg.diag_part(mvn.covariance())))
+  #print("loc:", tf.math.reduce_min(loc), tf.math.reduce_mean(loc), tf.math.reduce_max(loc))
+
+  tf.debugging.assert_all_finite(scale, "Scale contains NaN values")
 
 
-def clr_forward(z, axis=1):
-    return tf.nn.softmax(z, axis=axis)
 
-def helmert_tf(n):
-  tensor = tf.ones((n, n))
-  H = tf.linalg.set_diag(tf.linalg.band_part(tensor, -1, 0), 1-tf.range(1, n+1, dtype=tf.float32))
-  d = tf.range(0, n, dtype=tf.float32) * tf.range(1, n+1, dtype=tf.float32)
-  H_full = H / tf.math.sqrt(d)[:, tf.newaxis]
-  return H_full[1:]
+  bijector = tfb.Chain([tfb.SoftmaxCentered(), tfb.Scale(1.0 / FLAGS.temperature)])
+  
+  #I = tf.eye(num_classes)
+  #scale = tf.reshape(scale, [-1, num_classes, FLAGS.num_factors])
 
-def ilr_forward(z, axis=-1):
-    H = helmert_tf(tf.shape(z)[-1] + 1)
-    return clr_forward((z / FLAGS.temperature) @ H, axis=axis)
+  #cov = tf.ensure_shape(cov, [None, num_classes, num_classes])
+  #cov += min_scale * I
+
+  #mvn = tfp.distributions.MultivariateNormalTriL(loc=loc, scale_tril=tf.linalg.cholesky(cov), validate_args=True, allow_nan_stats=False)
+  
 
 
-def ilr_inv(p):
-  z = clr_inv(p)
-  H = helmert_tf(tf.shape(p)[-1])
-  return (z @ tf.linalg.matrix_transpose(H)) * FLAGS.temperature
+  logit_normal = tfd.TransformedDistribution(
+    distribution=mvn,
+    bijector=bijector,
+    name='LogitNormalTransformedDistribution')
 
-def _create_normal(loc, scale, min_scale, num_classes, loc_ema, estimate_delta, labels, exponent):
-    # Create the Normal Distribution in logit space
-
-    num_classes_logits = get_dim_logits(num_classes)
-
-    diag = min_scale * tf.ones([tf.shape(loc)[0], num_classes_logits])
-    scale = tf.reshape(
-            scale, [-1, num_classes_logits, 1])
-    if FLAGS.no_scale:
-      scale = tf.zeros_like(scale)
-
-    mean = loc
-    if estimate_delta:
-        assert labels is not None
-        assert exponent is not None
-        loc_ema = tf.stop_gradient(loc_ema)
-        factor = 1.0-tf.math.pow(FLAGS.alpha, exponent)
-
-        t = ilr_inv(labels)
-        mean += factor * (t - loc_ema)
-
-    return tfd.MultivariateNormalDiagPlusLowRank(loc=mean,
-                                                 scale_diag=diag,
-                                                 scale_perturb_factor=scale,
-                                                 validate_args=False,
-                                                 allow_nan_stats=False)
-
+  return logit_normal
 
 
 def _extract_hyperparameter_dictionary():
@@ -293,7 +262,6 @@ def main(argv):
   steps_per_epoch = train_builder.num_examples // batch_size
   steps_per_eval = clean_test_builder.num_examples // batch_size
   num_classes = 100 if FLAGS.dataset == 'cifar100' else 10
-  dim_logits = get_dim_logits(num_classes)
 
   if FLAGS.ood_interval > 0:
     ood_dataset_names = FLAGS.ood_dataset
@@ -328,49 +296,45 @@ def main(argv):
   with strategy.scope():
     logging.info('Building ResNet model')
     if FLAGS.model == 'WRN':
-      model = wide_resnet_logitnormal(
+      model = wide_resnet(
         input_shape=(32, 32, 3),
         depth=28,
         width_multiplier=FLAGS.width,
-        num_classes=dim_logits,
+        num_classes=num_classes,
         l2=FLAGS.l2,
         hps=_extract_hyperparameter_dictionary(),
         version=2,
-        temperature=FLAGS.temperature,
         num_factors=1,
-        num_mc_samples=FLAGS.num_mc_samples,
         no_scale=False)
-      if FLAGS.estimate_delta:
-        ema = tf.train.ExponentialMovingAverage(decay=FLAGS.beta)
-        model_delta = wide_resnet_logitnormal(
-          input_shape=(32, 32, 3),
-          depth=28,
-          width_multiplier=FLAGS.width,
-          num_classes=dim_logits,
-          l2=FLAGS.l2,
-          hps=_extract_hyperparameter_dictionary(),
-          version=2,
-          temperature=FLAGS.temperature,
-          num_factors=1,
-          num_mc_samples=FLAGS.num_mc_samples,
-          no_scale=False)
-
-        ema.apply(model.trainable_variables)
     else:
         assert False
-
-
-
 
     logging.info('Model input shape: %s', model.input_shape)
     logging.info('Model output shape: %s', model.output_shape)
     logging.info('Model number of weights: %s', model.count_params())
     # Linearly scale learning rate and the decay epochs by vanilla settings.
     base_lr = FLAGS.base_learning_rate * batch_size / 128
-    optimizer = tf.keras.optimizers.SGD(base_lr,
-                                        momentum=1.0 - FLAGS.one_minus_momentum,
-                                        nesterov=True)
+    if FLAGS.constant_lr:
+        optimizer = tf.keras.optimizers.SGD(base_lr,
+                                            momentum=1.0 - FLAGS.one_minus_momentum,
+                                            nesterov=True)
+    else:
+        if FLAGS.dataset == 'cifar10':
+          lr_decay_epochs = [(int(start_epoch_str) * FLAGS.train_epochs) // 200
+                           for start_epoch_str in FLAGS.lr_decay_epochs]
+        elif FLAGS.dataset == 'cifar100':
+          lr_decay_epochs = [int(e) for e in FLAGS.lr_decay_epochs]
 
+        print("\n Base_lr:", base_lr, "\n")
+        lr_schedule = ub.schedules.WarmUpPiecewiseConstantSchedule(
+            steps_per_epoch,
+            base_lr,
+            decay_ratio=FLAGS.lr_decay_ratio,
+            decay_epochs=lr_decay_epochs,
+            warmup_epochs=FLAGS.lr_warmup_epochs)
+        optimizer = tf.keras.optimizers.SGD(lr_schedule,
+                                            momentum=0.9,
+                                            nesterov=True)
     metrics = {
         'train/accuracy_nl':
             tf.keras.metrics.SparseCategoricalAccuracy(),
@@ -384,19 +348,29 @@ def main(argv):
             tf.keras.metrics.SparseCategoricalAccuracy(),
         'train/negative_log_likelihood':
             tf.keras.metrics.Mean(),
+        'train/entropy_clean':
+            tf.keras.metrics.Mean(),
+        'train/entropy_noisy':
+            tf.keras.metrics.Mean(),
+        'train/mse_mu_label_clean':
+            tf.keras.metrics.Mean(),
+        'train/mse_mu_label_noisy':
+            tf.keras.metrics.Mean(),
+        'train/grad_scale':
+            tf.keras.metrics.Mean(),
+        'train/grad_mu':
+            tf.keras.metrics.Mean(),
+        'train/grad_scale_clean':
+            tf.keras.metrics.Mean(),
+        'train/grad_scale_noisy':
+            tf.keras.metrics.Mean(),
+        'train/grad_mu_clean':
+            tf.keras.metrics.Mean(),
+        'train/grad_mu_noisy':
+            tf.keras.metrics.Mean(),
         'train/accuracy':
             tf.keras.metrics.SparseCategoricalAccuracy(),
         'train/accuracy_tl':
-            tf.keras.metrics.SparseCategoricalAccuracy(),
-        'train/accuracy_delta_tl_clean':
-            tf.keras.metrics.SparseCategoricalAccuracy(),
-        'train/accuracy_delta_tl_corrupted':
-            tf.keras.metrics.SparseCategoricalAccuracy(),
-        'train/accuracy_delta_nl_corrupted':
-            tf.keras.metrics.SparseCategoricalAccuracy(),
-        'train/accuracy_delta':
-            tf.keras.metrics.SparseCategoricalAccuracy(),
-        'train/accuracy_delta_tl':
             tf.keras.metrics.SparseCategoricalAccuracy(),
         'train/loss':
             tf.keras.metrics.Mean(),
@@ -408,13 +382,6 @@ def main(argv):
             tf.keras.metrics.SparseCategoricalAccuracy(),
         'test/ece':
             rm.metrics.ExpectedCalibrationError(num_bins=FLAGS.num_bins),
-        'test/negative_log_likelihood_delta':
-            tf.keras.metrics.Mean(),
-        'test/accuracy_delta':
-            tf.keras.metrics.SparseCategoricalAccuracy(),
-        'test/ece_delta':
-            rm.metrics.ExpectedCalibrationError(num_bins=FLAGS.num_bins),
-
     }
     if validation_dataset:
       metrics.update({
@@ -422,11 +389,6 @@ def main(argv):
           'validation/accuracy_tl': tf.keras.metrics.SparseCategoricalAccuracy(),
           'validation/accuracy_nl': tf.keras.metrics.SparseCategoricalAccuracy(),
           'validation/ece': rm.metrics.ExpectedCalibrationError(
-              num_bins=FLAGS.num_bins),
-          'validation/negative_log_likelihood_delta': tf.keras.metrics.Mean(),
-          'validation/accuracy_tl_delta': tf.keras.metrics.SparseCategoricalAccuracy(),
-          'validation/accuracy_nl_delta': tf.keras.metrics.SparseCategoricalAccuracy(),
-          'validation/ece_delta': rm.metrics.ExpectedCalibrationError(
               num_bins=FLAGS.num_bins),
       })
 
@@ -447,9 +409,6 @@ def main(argv):
               rm.metrics.ExpectedCalibrationError(num_bins=FLAGS.num_bins))
 
     checkpoint = tf.train.Checkpoint(model=model, optimizer=optimizer)
-    if FLAGS.estimate_delta:
-      checkpoint_delta = tf.train.Checkpoint(model=model_delta, optimizer=optimizer)
-
     latest_checkpoint = tf.train.latest_checkpoint(FLAGS.output_dir)
     initial_epoch = 0
     if latest_checkpoint:
@@ -472,30 +431,27 @@ def main(argv):
 
 
   @tf.function
-  def train_step(iterator, epoch):
+  def train_step(iterator):
     """Training StepFn."""
-    def step_fn(inputs, step):
+    def step_fn(inputs):
       """Per-Replica StepFn."""
       images = inputs['features']
       labels = inputs['noisy_labels'] if FLAGS.noisy_labels else inputs['labels']
-      smoothed_targets = get_smoothed_onehot(labels, num_classes)
-      logit_targets = ilr_inv(smoothed_targets)
-
-      if FLAGS.estimate_delta:
-        loc_ema, _ = model_delta(images, training=True)
-
-      exponent = tf.cast(epoch, tf.float32) + \
-                tf.cast(step, tf.float32) / steps_per_epoch
-
-
+    
       with tf.GradientTape(persistent=True) as tape:
 
         loc, scale = model(images, training=True)
       
-        normal = _create_normal(loc, scale, FLAGS.min_scale, num_classes, loc_ema,
-                                FLAGS.estimate_delta, smoothed_targets, exponent)
+        t = tf.cast(optimizer.iterations / total_steps, tf.float32)
+        min_scale = FLAGS.max_scale * (1.0 - t) + FLAGS.min_scale * t
 
-        nll_vec = normal.log_prob(logit_targets)
+        one_hot_labels = tf.one_hot(tf.cast(labels, tf.int32), num_classes+1)
+        smoothed_targets = (1.0-FLAGS.label_smoothing) * one_hot_labels + \
+          FLAGS.label_smoothing * tf.ones(tf.shape(one_hot_labels)) / (num_classes+1)
+
+
+        logit_normal = _create_logitnormal(loc, scale, min_scale, num_classes, smoothed_targets)
+        nll_vec = logit_normal.log_prob(smoothed_targets)
         negative_log_likelihood = -tf.reduce_mean(nll_vec)
 
         l2_loss = sum(model.losses)
@@ -508,16 +464,22 @@ def main(argv):
       if not FLAGS.grad_clip_norm < 0.0:
           grads, global_norm = tf.clip_by_global_norm(grads, FLAGS.grad_clip_norm)
 
-      opt_op = optimizer.apply_gradients(zip(grads, model.trainable_variables))
+      optimizer.apply_gradients(zip(grads, model.trainable_variables))
 
-      if FLAGS.estimate_delta:
-        with tf.control_dependencies([opt_op]):
-          ema.apply(model.trainable_variables)
-          # Update the weights of the ema model
-          for v, v_delta in zip(model.trainable_variables, model_delta.trainable_variables):
-            v_delta.assign(ema.average(v))
 
-      probs = ilr_forward(loc, axis=1)
+      grads_mu = tape.gradient(scaled_loss, loc)
+      grads_scale = tape.gradient(scaled_loss, scale)
+      grads_mu = tf.ensure_shape(grads_mu, [None, num_classes])
+      grads_scale = tf.ensure_shape(grads_scale, [None, num_classes])
+
+      grads_mu = tf.norm(grads_mu, axis=1)
+      grads_scale = tf.norm(grads_scale, axis=1)
+      grads_mu = tf.ensure_shape(grads_mu, [None])
+      grads_scale = tf.ensure_shape(grads_scale, [None])
+
+
+      probs = logit_normal.bijector.forward(loc, axis=1)
+
       metrics['train/ece'].add_batch(probs, label=labels)
       metrics['train/loss'].update_state(loss)
       metrics['train/negative_log_likelihood'].update_state(
@@ -525,9 +487,8 @@ def main(argv):
       metrics['train/accuracy'].update_state(labels, probs)
       metrics['train/accuracy_tl'].update_state(inputs['labels'], probs)
 
-      probs_delta = ilr_forward(loc_ema, axis=1)
-      metrics['train/accuracy_delta'].update_state(labels, probs_delta)
-      metrics['train/accuracy_delta_tl'].update_state(inputs['labels'], probs_delta)
+      metrics['train/grad_mu'].update_state(tf.reduce_sum(grads_mu))
+      metrics['train/grad_scale'].update_state(tf.reduce_sum(grads_scale))
 
 
       if FLAGS.noisy_labels:
@@ -541,19 +502,31 @@ def main(argv):
           metrics['train/accuracy_tl_corrupted'].update_state(tl_labels_corrupted, probs_corrupted)
           metrics['train/accuracy_nl_corrupted'].update_state(nl_labels_corrupted, probs_corrupted)
 
-          probs_delta_clean, probs_delta_corrupted = tf.boolean_mask(probs_delta, mask), tf.boolean_mask(probs_delta, ~mask)
+          entropy = logit_normal.distribution.entropy()
+          entropy_c, entropy_n = tf.reduce_mean(tf.boolean_mask(entropy, mask)), tf.reduce_mean(tf.boolean_mask(entropy, ~mask))
+        
+          target_logits = logit_normal.bijector.inverse(smoothed_targets, axis=1)
+          mse_mu = tf.reduce_mean(tf.math.square(loc - target_logits), axis=1)
 
-          # Accuracy
-          metrics['train/accuracy_delta_tl_clean'].update_state(tl_labels_clean, probs_delta_clean)
-          metrics['train/accuracy_delta_tl_corrupted'].update_state(tl_labels_corrupted, probs_delta_corrupted)
-          metrics['train/accuracy_delta_nl_corrupted'].update_state(nl_labels_corrupted, probs_delta_corrupted)
+          mse_mu_c, mse_mu_n = tf.reduce_mean(tf.boolean_mask(mse_mu, mask)), tf.reduce_mean(tf.boolean_mask(mse_mu, ~mask))
+          g_mu_c, g_mu_n = tf.reduce_sum(tf.boolean_mask(grads_mu, mask)), tf.reduce_sum(tf.boolean_mask(grads_mu, ~mask))
+          g_scale_c, g_scale_n = tf.reduce_sum(tf.boolean_mask(grads_scale, mask)), tf.reduce_sum(tf.boolean_mask(grads_scale, ~mask))
+
+          metrics['train/entropy_clean'].update_state(entropy_c)
+          metrics['train/entropy_noisy'].update_state(entropy_n)
+          metrics['train/mse_mu_label_clean'].update_state(mse_mu_c)
+          metrics['train/mse_mu_label_noisy'].update_state(mse_mu_n)
+          metrics['train/grad_mu_clean'].update_state(tf.reduce_mean(g_mu_c))
+          metrics['train/grad_mu_noisy'].update_state(tf.reduce_mean(g_mu_n))
+          metrics['train/grad_scale_clean'].update_state(tf.reduce_mean(g_scale_c))
+          metrics['train/grad_scale_noisy'].update_state(tf.reduce_mean(g_scale_n))
 
 
-    for step in tf.range(tf.cast(steps_per_epoch, tf.int32)):
-      strategy.run(step_fn, args=(next(iterator), step,))
+    for _ in tf.range(tf.cast(steps_per_epoch, tf.int32)):
+      strategy.run(step_fn, args=(next(iterator),))
 
   @tf.function
-  def test_step(iterator, dataset_split, dataset_name, num_steps, model_eval, suffix):
+  def test_step(iterator, dataset_split, dataset_name, num_steps):
     """Evaluation StepFn."""
     def step_fn(inputs):
       """Per-Replica StepFn."""
@@ -561,33 +534,38 @@ def main(argv):
       labels = inputs['labels']
       labels_noisy = inputs['noisy_labels'] if FLAGS.noisy_labels and dataset_split in ['train', 'validation'] else inputs['labels']
 
-      loc, _ = model_eval(images, training=False)
+      loc, scale = model(images, training=False)
  
-      probs = ilr_forward(loc, axis=1)
+
+      t = tf.cast(optimizer.iterations / total_steps, tf.float32)
+      min_scale = FLAGS.max_scale * (1.0 - t) + FLAGS.min_scale * t
+      logit_normal = _create_logitnormal(loc, scale, min_scale, num_classes)
+
+
+      probs = logit_normal.bijector.forward(loc, axis=1)
+
       negative_log_likelihood = tf.reduce_mean(
           tf.keras.losses.sparse_categorical_crossentropy(labels, probs))
 
       if dataset_name == 'clean':
         if dataset_split == 'validation':
-          metrics[f'{dataset_split}/negative_log_likelihood' + suffix].update_state(
+          metrics[f'{dataset_split}/negative_log_likelihood'].update_state(
             negative_log_likelihood)
-          metrics[f'{dataset_split}/accuracy_tl' + suffix].update_state(labels, probs)
-          metrics[f'{dataset_split}/accuracy_nl' + suffix].update_state(labels_noisy, probs)
-          metrics[f'{dataset_split}/ece' + suffix].add_batch(probs, label=labels)
+          metrics[f'{dataset_split}/accuracy_tl'].update_state(labels, probs)
+          metrics[f'{dataset_split}/accuracy_nl'].update_state(labels_noisy, probs)
+          metrics[f'{dataset_split}/ece'].add_batch(probs, label=labels)
         else:
-          metrics[f'{dataset_split}/negative_log_likelihood' + suffix].update_state(
+          metrics[f'{dataset_split}/negative_log_likelihood'].update_state(
               negative_log_likelihood)
-          metrics[f'{dataset_split}/accuracy' + suffix].update_state(labels, probs)
-          metrics[f'{dataset_split}/ece' + suffix].add_batch(probs, label=labels)
+          metrics[f'{dataset_split}/accuracy'].update_state(labels, probs)
+          metrics[f'{dataset_split}/ece'].add_batch(probs, label=labels)
       elif dataset_name == 'val':
-        assert False
         metrics[f'validation/negative_log_likelihood'].update_state(
           negative_log_likelihood)
         metrics[f'validation/accuracy_tl'].update_state(labels, probs)
         metrics[f'validation/accuracy_nl'].update_state(labels_noisy, probs)
         metrics[f'validation/ece'].add_batch(probs, label=labels)
       elif dataset_name == 'train_c10n' and FLAGS.noisy_labels and FLAGS.eval_only:
-        assert False
         rand1, rand2, rand3 = inputs['label_rand1'], inputs['label_rand2'], inputs['label_rand3']
         nll_vec = (tf.keras.losses.sparse_categorical_crossentropy(rand1, probs) +
                    tf.keras.losses.sparse_categorical_crossentropy(rand2, probs) +
@@ -597,7 +575,6 @@ def main(argv):
           negative_log_likelihood)
         metrics[f'{dataset_split}/accuracy_nl'].update_state(labels_noisy, probs)
       elif dataset_name.startswith('ood'):
-        assert False
         ood_labels = 1 - inputs['is_in_distribution']
         if FLAGS.dempster_shafer_ood:
           probs_clipped = tf.clip_by_value(probs, 1e-7, 1.0)
@@ -612,7 +589,6 @@ def main(argv):
           if ood_dataset_name in name:
             metric.update_state(ood_labels, ood_scores)
       elif FLAGS.corruptions_interval > 0:
-        assert False
         corrupt_metrics['test/nll_{}'.format(dataset_name)].update_state(
             negative_log_likelihood)
         corrupt_metrics['test/accuracy_{}'.format(dataset_name)].update_state(
@@ -634,10 +610,6 @@ def main(argv):
         profile_batch=(100, 102),
         log_dir=os.path.join(FLAGS.output_dir, 'logs'))
     tb_callback.set_model(model)
-
-  models = [model, model_delta] if FLAGS.estimate_delta else [model]
-  suffixes = ['', '_delta'] if FLAGS.estimate_delta else ['']
-
   for epoch in range(initial_epoch, FLAGS.train_epochs):
     logging.info('Starting to run epoch: %s', epoch)
     if tb_callback:
@@ -646,8 +618,7 @@ def main(argv):
     if not FLAGS.eval_only:
       train_start_time = time.time()
       print("\nLearning rate:", optimizer._decayed_lr('float32').numpy(), "\n")
-      epoch_tensor = tf.convert_to_tensor(epoch, tf.int64)
-      train_step(train_iterator, epoch_tensor)
+      train_step(train_iterator)
       ms_per_example = (time.time() - train_start_time) * 1e6 / batch_size
       metrics['train/ms_per_example'].update_state(ms_per_example)
 
@@ -671,39 +642,36 @@ def main(argv):
     if FLAGS.eval_only:
       test_step(train_iterator, 'train', 'train_c10n', steps_per_epoch)
 
+    if validation_dataset:
+      validation_iterator = iter(validation_dataset)
+      test_step(
+          validation_iterator, 'validation', 'clean', steps_per_validation)
+    datasets_to_evaluate = {'clean': test_datasets['clean']}
+    if (FLAGS.corruptions_interval > 0 and
+        (epoch + 1) % FLAGS.corruptions_interval == 0):
+        datasets_to_evaluate = test_datasets
+    for dataset_name, test_dataset in datasets_to_evaluate.items():
+      test_iterator = iter(test_dataset)
+      logging.info('Testing on dataset %s', dataset_name)
+      logging.info('Starting to run eval at epoch: %s', epoch)
+      test_start_time = time.time()
+      test_step(test_iterator, 'test', dataset_name, steps_per_eval)
+      ms_per_example = (time.time() - test_start_time) * 1e6 / batch_size
+      metrics['test/ms_per_example'].update_state(ms_per_example)
 
+      logging.info('Done with testing on %s', dataset_name)
 
-    for model_eval, suffix in zip(models, suffixes):
-      if validation_dataset:
-        validation_iterator = iter(validation_dataset)
-        test_step(
-            validation_iterator, 'validation', 'clean', steps_per_validation, model_eval, suffix)
-      datasets_to_evaluate = {'clean': test_datasets['clean']}
-      if (FLAGS.corruptions_interval > 0 and
-          (epoch + 1) % FLAGS.corruptions_interval == 0):
-          datasets_to_evaluate = test_datasets
-      for dataset_name, test_dataset in datasets_to_evaluate.items():
-        test_iterator = iter(test_dataset)
-        logging.info('Testing on dataset %s', dataset_name)
-        logging.info('Starting to run eval at epoch: %s', epoch)
-        test_start_time = time.time()
-        test_step(test_iterator, 'test', dataset_name, steps_per_eval, model_eval, suffix)
-        ms_per_example = (time.time() - test_start_time) * 1e6 / batch_size
-        metrics['test/ms_per_example'].update_state(ms_per_example)
+    if (FLAGS.ood_interval > 0 and
+        (epoch + 1) % FLAGS.ood_interval == 0):
 
-        logging.info('Done with testing on %s', dataset_name)
+      for dataset_name in ood_dataset_names:
+        ood_iterator = iter(ood_datasets['ood_{}'.format(dataset_name)])
+        logging.info('Calculating OOD on dataset %s', dataset_name)
+        logging.info('Running OOD eval at epoch: %s', epoch)
+        test_step(ood_iterator, 'test', 'ood_{}'.format(dataset_name),
+                  steps_per_ood[dataset_name])
 
-      if (FLAGS.ood_interval > 0 and
-          (epoch + 1) % FLAGS.ood_interval == 0):
-
-        for dataset_name in ood_dataset_names:
-          ood_iterator = iter(ood_datasets['ood_{}'.format(dataset_name)])
-          logging.info('Calculating OOD on dataset %s', dataset_name)
-          logging.info('Running OOD eval at epoch: %s', epoch)
-          test_step(ood_iterator, 'test', 'ood_{}'.format(dataset_name),
-                    steps_per_ood[dataset_name], model_eval, suffix)
-
-          logging.info('Done with OOD eval on %s', dataset_name)
+        logging.info('Done with OOD eval on %s', dataset_name)
 
     corrupt_results = {}
     if (FLAGS.corruptions_interval > 0 and
