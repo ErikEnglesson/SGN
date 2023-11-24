@@ -628,7 +628,6 @@ def main(argv):
 
     if not FLAGS.eval_only:
       train_start_time = time.time()
-      print("\nLearning rate:", optimizer._decayed_lr('float32').numpy(), "\n")
       epoch_tensor = tf.convert_to_tensor(epoch, tf.int64)
       train_step(train_iterator, epoch_tensor)
       ms_per_example = (time.time() - train_start_time) * 1e6 / batch_size

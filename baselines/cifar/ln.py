@@ -106,10 +106,7 @@ def _create_logitnormal(loc, scale, min_scale, num_classes, labels=None):
   loc = tf.ensure_shape(loc, [None, num_classes])
   scale = tf.ensure_shape(scale, [None, num_classes])
   scale = tf.reshape(scale, [-1, num_classes, 1])
-
-  #scale = tf.squeeze(scale) if scale is not None else scale
   diag = min_scale * tf.ones([tf.shape(loc)[0], num_classes])
-
 
   mvn = tfd.MultivariateNormalDiagPlusLowRank(loc=loc,
                                               scale_diag=diag,
@@ -117,27 +114,9 @@ def _create_logitnormal(loc, scale, min_scale, num_classes, labels=None):
                                               validate_args=False,
                                               allow_nan_stats=False) # Debug
 
-  #print("lr_decay_epochs:", FLAGS.lr_decay_epochs) 
-  #print("diag:", diag)
-  #print("scale:", scale)
-  #print("cov:", tf.math.reduce_min(tf.linalg.diag_part(mvn.covariance())), tf.math.reduce_mean(tf.linalg.diag_part(mvn.covariance())), tf.math.reduce_max(tf.linalg.diag_part(mvn.covariance())))
-  #print("loc:", tf.math.reduce_min(loc), tf.math.reduce_mean(loc), tf.math.reduce_max(loc))
-
   tf.debugging.assert_all_finite(scale, "Scale contains NaN values")
-
-
-
   bijector = tfb.Chain([tfb.SoftmaxCentered(), tfb.Scale(1.0 / FLAGS.temperature)])
   
-  #I = tf.eye(num_classes)
-  #scale = tf.reshape(scale, [-1, num_classes, FLAGS.num_factors])
-
-  #cov = tf.ensure_shape(cov, [None, num_classes, num_classes])
-  #cov += min_scale * I
-
-  #mvn = tfp.distributions.MultivariateNormalTriL(loc=loc, scale_tril=tf.linalg.cholesky(cov), validate_args=True, allow_nan_stats=False)
-  
-
 
   logit_normal = tfd.TransformedDistribution(
     distribution=mvn,
@@ -584,7 +563,6 @@ def main(argv):
 
     if not FLAGS.eval_only:
       train_start_time = time.time()
-      print("\nLearning rate:", optimizer._decayed_lr('float32').numpy(), "\n")
       train_step(train_iterator)
       ms_per_example = (time.time() - train_start_time) * 1e6 / batch_size
       metrics['train/ms_per_example'].update_state(ms_per_example)

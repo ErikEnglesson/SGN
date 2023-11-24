@@ -182,7 +182,6 @@ def main(argv):
         strategy = tf.distribute.TPUStrategy(resolver)
 
     ds_info = tfds.builder(FLAGS.dataset, data_dir=data_dir).info
-    print(ds_info)
     batch_size = FLAGS.per_core_batch_size * FLAGS.num_cores
     train_dataset_size = (
         ds_info.splits['train'].num_examples * FLAGS.train_proportion)

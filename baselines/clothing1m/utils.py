@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Utilities for WebVision."""
+"""Utilities for Clothing1M."""
 
 import os
 from absl import flags
@@ -22,16 +22,14 @@ import tensorflow as tf
 import tensorflow_datasets as tfds
 
 # common flags
-flags.DEFINE_float('base_learning_rate', 0.02,
+flags.DEFINE_float('base_learning_rate', 1e-3,
                    'Base learning rate.')
-flags.DEFINE_integer('checkpoint_interval', 0,
+flags.DEFINE_integer('checkpoint_interval', -1,
                      'Number of epochs between saving checkpoints. Use -1 to '
                      'never save checkpoints.')
-flags.DEFINE_integer('eval_interval', 1,
-                     'Number of epochs between evaluating on validation sets.')
 
-flags.DEFINE_enum('dataset', 'webvision',
-                  enum_values=['webvision'],
+flags.DEFINE_enum('dataset', 'clothing1m',
+                  enum_values=['clothing1m'],
                   help='Dataset.')
 flags.DEFINE_string('data_dir', None,
                     'data_dir to be used for tfds dataset construction.'
@@ -39,28 +37,26 @@ flags.DEFINE_string('data_dir', None,
 flags.DEFINE_bool('download_data', False,
                   'Whether to download data locally when initializing a '
                   'dataset.')
-flags.DEFINE_float('l2', 5e-4, 'L2 regularization coefficient.')
-
-flags.DEFINE_float('lr_decay_ratio', 1.0, 'Amount to decay learning rate.')
-flags.DEFINE_list('lr_decay_epochs', [40, 80],
+flags.DEFINE_float('l2', 5e-3, 'L2 regularization coefficient.')
+flags.DEFINE_float('lr_decay_ratio', 0.1, 'Amount to decay learning rate.')
+flags.DEFINE_list('lr_decay_epochs', [5],
                   'Epochs to decay learning rate by.')
-flags.DEFINE_integer('lr_warmup_epochs', 1,
+flags.DEFINE_integer('lr_warmup_epochs', 0,
                      'Number of epochs for a linear warmup to the initial '
                      'learning rate. Use 0 to do no warmup.')
-
-
+                     
 flags.DEFINE_integer('num_bins', 15, 'Number of bins for ECE.')
 
 flags.DEFINE_float('one_minus_momentum', 0.1, 'Optimizer momentum.')
 flags.DEFINE_string('output_dir', '/tmp/cifar', 'Output directory.')
-flags.DEFINE_integer('per_core_batch_size', 64,
+flags.DEFINE_integer('per_core_batch_size', 32,
                      'Batch size per TPU core/GPU. The number of new '
                      'datapoints gathered per batch is this number divided by '
                      'ensemble_size (we tile the batch by that # of times).')
 flags.DEFINE_integer('shuffle_buffer_size', None,
                      'Shuffle buffer size for training dataset.')
 flags.DEFINE_integer('seed', 42, 'Random seed.')
-flags.DEFINE_integer('train_epochs', 600, 'Number of training epochs.')
+flags.DEFINE_integer('train_epochs', 10, 'Number of training epochs.')
 
 
 # Accelerator flags.

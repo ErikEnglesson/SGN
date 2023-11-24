@@ -13,13 +13,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Wide ResNet 28-10 on Clothing 1M trained with maximum likelihood.
+"""Training with SGN on WebVision with an InceptionResNetV2."""
 
-Hyperparameters differ slightly from the original paper's code
-(https://github.com/szagoruyko/wide-residual-networks) as TensorFlow uses, for
-example, l2 instead of weight decay, and a different parameterization for SGD's
-momentum.
-"""
+
 import atexit
 from inception_resnetv2 import InceptionResNetV2 # local file import
 import WebVision # local file import
@@ -48,15 +44,12 @@ flags.DEFINE_bool('collect_profile', False,
 flags.DEFINE_string('saved_model_dir', None,
                     'Directory containing the saved model checkpoints.')
 
-flags.DEFINE_enum('lr_schedule', 'expdecay',
-                  enum_values=['expdecay', 'piecewise', 'cos'],
-                  help='Type of label noise.')
-
 
 flags.DEFINE_bool('eval_only', False,
                   'Whether to run only eval and (maybe) OOD steps.')
 
 
+# SGN flags
 flags.DEFINE_bool('estimate_delta', False,
                   'Whether to have an exponential moving average (EMA) network estimate label noise (delta).')
 flags.DEFINE_float(
@@ -72,6 +65,7 @@ flags.DEFINE_float('temperature', 0.3,
                    'Temperature for heteroscedastic head.')
 
 
+# Data augmentation
 flags.DEFINE_float('mixup', 0.8,
                    'mixup alpha.')
 

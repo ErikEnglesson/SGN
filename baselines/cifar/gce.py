@@ -168,7 +168,6 @@ def main(argv):
     strategy = tf.distribute.TPUStrategy(resolver)
 
   ds_info = tfds.builder(FLAGS.dataset, data_dir=data_dir).info
-  print(ds_info)
   batch_size = FLAGS.per_core_batch_size * FLAGS.num_cores
   train_dataset_size = (
       ds_info.splits['train'].num_examples * FLAGS.train_proportion)
@@ -384,31 +383,6 @@ def main(argv):
       images = inputs['features']
       labels = inputs['noisy_labels'] if FLAGS.noisy_labels else inputs['labels']
 
-      #tf.print("inputs[labels]:", inputs['labels'], tf.math.reduce_max(inputs['labels']))
-      #tf.print("inputs[noisy_labels]:", inputs['noisy_labels'], tf.math.reduce_max(inputs['noisy_labels']))
-      #tf.print("labels:", labels)
-      
-      """
-      print("\n")
-      #print("inputs.keys():", inputs.keys())
-      #tf.print("id:", inputs['id'])
-      #tf.print("enumearte_add_per_step_id", inputs['_enumerate_added_per_step_id'])
-      #tf.print("element_id", inputs['element_id'])
-      #print('train_36871' == inputs['id'])
-      index = tf.where('train_36871' == inputs['id'])
-      
-      if not tf.equal(tf.size(index), 0):
-          tf.print(tf.size(index))
-          tf.print(index[0])
-          tf.print(index[0][0])
-          tf.print(inputs['features'][index[0][0], :, :, 0])
-          tf.print("label:", inputs['labels'][index[0][0]])
-          tf.print("noisy label:", inputs['noisy_labels'][index[0][0]])
-          tf.print("element_id:", inputs['element_id'][index[0][0]])
-          tf.print("id:", inputs['id'][index[0][0]])
-
-      print("\n")
-      """ 
       if FLAGS.augmix and FLAGS.aug_count >= 1:
         # Index 0 at augmix processing is the unperturbed image.
         # We take just 1 augmented image from the returned augmented images.
