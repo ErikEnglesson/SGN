@@ -48,7 +48,7 @@ from wide_resnet_factors import wide_resnet # local file import
 flags.register_validator('train_proportion',
                          lambda tp: tp > 0.0 and tp <= 1.0,
                          message='--train_proportion must be in (0, 1].')
-flags.DEFINE_float('label_smoothing', 0.1, 'Label smoothing parameter in (0,1].')
+flags.DEFINE_float('label_smoothing', 0.001, 'Label smoothing parameter in (0,1].')
 flags.register_validator('label_smoothing',
                          lambda ls: ls > 0.0 and ls <= 1.0,
                          message='--label_smoothing must be in (0, 1].')
@@ -75,9 +75,9 @@ flags.DEFINE_bool('collect_profile', False,
 flags.DEFINE_bool('estimate_delta', False,
                   'Whether to have an exponential moving average (EMA) network estimate label noise (delta).')
 flags.DEFINE_float(
-    'alpha', 0.98, 'Exponential moving average weight for label estimation.')
+    'alpha', 0.995, 'Exponential moving average weight for label estimation.')
 flags.DEFINE_float(
-    'beta', 0.999, 'Exponential moving average weight for parameters of delta model.')
+    'beta', 0.9999, 'Exponential moving average weight for parameters of delta model.')
 
 
 # OOD flags.
@@ -103,17 +103,6 @@ flags.DEFINE_enum('corruption_type', 'asym',
                   help='Type of label noise.')
 
 
-# Architecture
-flags.DEFINE_integer('width', 10,
-                  'Width of ResNet.')
-flags.DEFINE_enum('model', 'WRN',
-                  enum_values=['WRN'],
-                  help='Which model to use.')
-
-
-flags.DEFINE_bool('constant_lr', False,
-                  'Whether to use contant learning rate.')
-
 
 FLAGS = flags.FLAGS
 
@@ -121,8 +110,8 @@ def get_dim_logits(num_classes):
     return num_classes-1
 
 
-# Implements standard label smoothing
 def get_smoothed_onehot(labels, num_classes):
+    """ Implements standard label smoothing. """
     dim = num_classes
     one_hot_labels = tf.one_hot(tf.cast(labels, tf.int32), dim)
     smoothed_targets = (1.0-FLAGS.label_smoothing) * one_hot_labels + \
@@ -334,8 +323,19 @@ def main(argv):
 
   with strategy.scope():
     logging.info('Building ResNet model')
-    if FLAGS.model == 'WRN':
-      model = wide_resnet(
+    model = wide_resnet(
+      input_shape=(32, 32, 3),
+      depth=28,
+      width_multiplier=FLAGS.width,
+      num_classes=dim_logits,
+      l2=FLAGS.l2,
+      hps=_extract_hyperparameter_dictionary(),
+      version=2,
+      num_factors=1,
+      no_scale=False)
+    if FLAGS.estimate_delta:
+      ema = tf.train.ExponentialMovingAverage(decay=FLAGS.beta)
+      model_delta = wide_resnet(
         input_shape=(32, 32, 3),
         depth=28,
         width_multiplier=FLAGS.width,
@@ -345,22 +345,9 @@ def main(argv):
         version=2,
         num_factors=1,
         no_scale=False)
-      if FLAGS.estimate_delta:
-        ema = tf.train.ExponentialMovingAverage(decay=FLAGS.beta)
-        model_delta = wide_resnet(
-          input_shape=(32, 32, 3),
-          depth=28,
-          width_multiplier=FLAGS.width,
-          num_classes=dim_logits,
-          l2=FLAGS.l2,
-          hps=_extract_hyperparameter_dictionary(),
-          version=2,
-          num_factors=1,
-          no_scale=False)
 
         ema.apply(model.trainable_variables)
-    else:
-        assert False
+
 
 
     logging.info('Model input shape: %s', model.input_shape)

@@ -118,17 +118,6 @@ flags.DEFINE_enum('corruption_type', 'asym',
                   help='Type of label noise.')
 
 
-# Architecture
-flags.DEFINE_integer('width', 10,
-                     'Width of ResNet.')
-
-
-flags.DEFINE_bool('constant_lr', False,
-                  'Whether to use contant learning rate.')
-
-flags.DEFINE_bool('cosine_lr', False,
-                  'Whether to use cosine learning rate.')
-
 FLAGS = flags.FLAGS
 
 
@@ -330,28 +319,10 @@ def main(argv):
         # Linearly scale learning rate and the decay epochs by vanilla settings.
 
         base_lr = FLAGS.base_learning_rate * batch_size / 128
-        if FLAGS.constant_lr:
-            optimizer = tf.keras.optimizers.SGD(base_lr,
-                                                momentum=1.0 - FLAGS.one_minus_momentum,
-                                                nesterov=True)
-        elif FLAGS.cosine_lr:
-            lr_schedule = tf.keras.optimizers.schedules.CosineDecay(
-                base_lr, steps_per_epoch * FLAGS.train_epochs)
-            optimizer = tf.keras.optimizers.SGD(lr_schedule,
-                                                momentum=1.0 - FLAGS.one_minus_momentum,
-                                                nesterov=True)
-        else:
-            lr_decay_epochs = [(int(start_epoch_str) * FLAGS.train_epochs) // 200
-                               for start_epoch_str in FLAGS.lr_decay_epochs]
-            lr_schedule = ub.schedules.WarmUpPiecewiseConstantSchedule(
-                steps_per_epoch,
-                base_lr,
-                decay_ratio=FLAGS.lr_decay_ratio,
-                decay_epochs=lr_decay_epochs,
-                warmup_epochs=FLAGS.lr_warmup_epochs)
-            optimizer = tf.keras.optimizers.SGD(lr_schedule,
-                                                momentum=1.0 - FLAGS.one_minus_momentum,
-                                                nesterov=True)
+        optimizer = tf.keras.optimizers.SGD(base_lr,
+                                            momentum=1.0 - FLAGS.one_minus_momentum,
+                                            nesterov=True)
+
         metrics = {
             'train/accuracy_tl_clean':
                 tf.keras.metrics.SparseCategoricalAccuracy(),

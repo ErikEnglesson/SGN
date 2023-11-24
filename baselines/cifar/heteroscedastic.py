@@ -92,12 +92,6 @@ flags.DEFINE_enum('corruption_type', 'asym',
                   enum_values=['sym', 'asym', 'worst', 'aggre', 'rand1', 'rand2', 'rand3', 'c100noise', 'instance'],
                   help='Type of label noise.')
 
-# Arch
-flags.DEFINE_integer('width', 10,
-                     'Width of ResNet.')
-
-flags.DEFINE_bool('constant_lr', False,
-                  'Whether to use contant learning rate.')
 
 FLAGS = flags.FLAGS
 
@@ -238,28 +232,9 @@ def main(argv):
     # Linearly scale learning rate and the decay epochs by vanilla settings.
     base_lr = FLAGS.base_learning_rate * batch_size / 128
 
-    
-    if FLAGS.constant_lr:
-        optimizer = tf.keras.optimizers.SGD(base_lr,
-                                            momentum=1.0 - FLAGS.one_minus_momentum,
-                                            nesterov=True)
-    else:
-        lr_decay_epochs = [(int(start_epoch_str) * FLAGS.train_epochs) // 200
-                           for start_epoch_str in FLAGS.lr_decay_epochs]
-        lr_schedule = ub.schedules.WarmUpPiecewiseConstantSchedule(
-            steps_per_epoch,
-            base_lr,
-            decay_ratio=FLAGS.lr_decay_ratio,
-            decay_epochs=lr_decay_epochs,
-            warmup_epochs=FLAGS.lr_warmup_epochs)
-        optimizer = tf.keras.optimizers.SGD(lr_schedule,
-                                            momentum=0.9,
-                                            nesterov=True)
-    
-    #lr_schedule = tf.keras.optimizers.schedules.CosineDecay(base_lr, steps_per_epoch * FLAGS.train_epochs)
-    #optimizer = tf.keras.optimizers.SGD(lr_schedule,
-    #                                    momentum=1.0 - FLAGS.one_minus_momentum,
-    #                                    nesterov=True)
+    optimizer = tf.keras.optimizers.SGD(base_lr,
+                                        momentum=1.0 - FLAGS.one_minus_momentum,
+                                        nesterov=True)
 
     metrics = {
         'train/accuracy_nl':

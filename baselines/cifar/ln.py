@@ -98,19 +98,6 @@ flags.DEFINE_enum('corruption_type', 'asym',
                   help='Type of label noise.')
 
 
-
-# Architecture
-flags.DEFINE_integer('width', 10,
-                  'Width of ResNet.')
-flags.DEFINE_enum('model', 'WRN',
-                  enum_values=['WRN'],
-                  help='Which model to use.')
-
-
-flags.DEFINE_bool('constant_lr', False,
-                  'Whether to use contant learning rate.')
-
-
 FLAGS = flags.FLAGS
 
 
@@ -119,7 +106,6 @@ def _create_logitnormal(loc, scale, min_scale, num_classes, labels=None):
   loc = tf.ensure_shape(loc, [None, num_classes])
   scale = tf.ensure_shape(scale, [None, num_classes])
   scale = tf.reshape(scale, [-1, num_classes, 1])
-
 
   #scale = tf.squeeze(scale) if scale is not None else scale
   diag = min_scale * tf.ones([tf.shape(loc)[0], num_classes])
@@ -295,46 +281,27 @@ def main(argv):
 
   with strategy.scope():
     logging.info('Building ResNet model')
-    if FLAGS.model == 'WRN':
-      model = wide_resnet(
-        input_shape=(32, 32, 3),
-        depth=28,
-        width_multiplier=FLAGS.width,
-        num_classes=num_classes,
-        l2=FLAGS.l2,
-        hps=_extract_hyperparameter_dictionary(),
-        version=2,
-        num_factors=1,
-        no_scale=False)
-    else:
-        assert False
+    model = wide_resnet(
+      input_shape=(32, 32, 3),
+      depth=28,
+      width_multiplier=FLAGS.width,
+      num_classes=num_classes,
+      l2=FLAGS.l2,
+      hps=_extract_hyperparameter_dictionary(),
+      version=2,
+      num_factors=1,
+      no_scale=False)
+
 
     logging.info('Model input shape: %s', model.input_shape)
     logging.info('Model output shape: %s', model.output_shape)
     logging.info('Model number of weights: %s', model.count_params())
-    # Linearly scale learning rate and the decay epochs by vanilla settings.
-    base_lr = FLAGS.base_learning_rate * batch_size / 128
-    if FLAGS.constant_lr:
-        optimizer = tf.keras.optimizers.SGD(base_lr,
-                                            momentum=1.0 - FLAGS.one_minus_momentum,
-                                            nesterov=True)
-    else:
-        if FLAGS.dataset == 'cifar10':
-          lr_decay_epochs = [(int(start_epoch_str) * FLAGS.train_epochs) // 200
-                           for start_epoch_str in FLAGS.lr_decay_epochs]
-        elif FLAGS.dataset == 'cifar100':
-          lr_decay_epochs = [int(e) for e in FLAGS.lr_decay_epochs]
 
-        print("\n Base_lr:", base_lr, "\n")
-        lr_schedule = ub.schedules.WarmUpPiecewiseConstantSchedule(
-            steps_per_epoch,
-            base_lr,
-            decay_ratio=FLAGS.lr_decay_ratio,
-            decay_epochs=lr_decay_epochs,
-            warmup_epochs=FLAGS.lr_warmup_epochs)
-        optimizer = tf.keras.optimizers.SGD(lr_schedule,
-                                            momentum=0.9,
-                                            nesterov=True)
+    base_lr = FLAGS.base_learning_rate * batch_size / 128
+    optimizer = tf.keras.optimizers.SGD(base_lr,
+                                        momentum=1.0 - FLAGS.one_minus_momentum,
+                                        nesterov=True)
+    
     metrics = {
         'train/accuracy_nl':
             tf.keras.metrics.SparseCategoricalAccuracy(),
