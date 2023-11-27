@@ -70,10 +70,7 @@ flags.register_validator('train_proportion',
                          message='--train_proportion must be in (0, 1].')
 
 # Accelerator flags.
-flags.DEFINE_bool('use_gpu', False, 'Whether to run on GPU or otherwise TPU.')
 flags.DEFINE_integer('num_cores', 1, 'Number of TPU cores or number of GPUs.')
-flags.DEFINE_string('tpu', None,
-                    'Name of the TPU. Only used if use_gpu is False.')
 flags.DEFINE_bool('use_bfloat16', False, 'Whether to use mixed precision.')
 
 # Architecture

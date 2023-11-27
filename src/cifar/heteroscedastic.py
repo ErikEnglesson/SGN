@@ -115,16 +115,8 @@ def main(argv):
   tf.random.set_seed(FLAGS.seed)
 
   data_dir = FLAGS.data_dir
-  if FLAGS.use_gpu:
-    logging.info('Use GPU')
-    strategy = tf.distribute.MirroredStrategy()
-  else:
-    logging.info('Use TPU at %s',
-                 FLAGS.tpu if FLAGS.tpu is not None else 'local')
-    resolver = tf.distribute.cluster_resolver.TPUClusterResolver(tpu=FLAGS.tpu)
-    tf.config.experimental_connect_to_cluster(resolver)
-    tf.tpu.experimental.initialize_tpu_system(resolver)
-    strategy = tf.distribute.TPUStrategy(resolver)
+  # Use GPU
+  strategy = tf.distribute.MirroredStrategy()
 
   ds_info = tfds.builder(FLAGS.dataset, data_dir=data_dir).info
   batch_size = FLAGS.per_core_batch_size * FLAGS.num_cores

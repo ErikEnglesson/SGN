@@ -14,7 +14,6 @@ For example, the SGN method on CIFAR-100 with 40% symmetric noise, can be run wi
 ```bash
 python src/cifar/sgn.py --data_dir=/path/to/data/ \
                         --output_dir=/path/to/output_dir/ \
-                        --use_gpu=True \
                         --dataset cifar100 \
                         --noisy_labels \
                         --corruption_type sym
@@ -22,12 +21,10 @@ python src/cifar/sgn.py --data_dir=/path/to/data/ \
 or on Clothing1M
 ```bash
 python src/clothing1m/sgn.py --data_dir=/path/to/data/ \
-                            --output_dir=/path/to/output_dir/ \
-                            --use_gpu=True
+                            --output_dir=/path/to/output_dir/ 
 ```
 or on WebVision
 ```bash
 python -u src/webvision/sgn.py --data_dir=/path/to/data/ \
-                               --output_dir=/path/to/output_dir/ \
-                               --use_gpu=True   
+                               --output_dir=/path/to/output_dir/
 ```
