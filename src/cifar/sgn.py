@@ -15,9 +15,9 @@
 
 """ Code to train the Shifted Gaussian Noise (SGN) method with a Wide ResNet 28-2 on CIFAR-10/100.
     Most relevant parts of the code are:
-    - Implementations of log-ratio transforms, starting on line 132.
-    - The function to create a shifted Gaussian distribution on line 162.
-    - The training step function on line 475.
+    - Implementations of log-ratio transforms, starting on line 119.
+    - The function to create a shifted Gaussian distribution on line 149.
+    - The training step function on line 455.
 
     The code uses and is based on the Uncertainty Baselines GitHub repo:
     https://github.com/google/uncertainty-baselines
