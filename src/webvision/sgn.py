@@ -50,8 +50,6 @@ flags.DEFINE_bool('eval_only', False,
 
 
 # SGN flags
-flags.DEFINE_bool('estimate_delta', False,
-                  'Whether to have an exponential moving average (EMA) network estimate label noise (delta).')
 flags.DEFINE_float(
     'alpha', 0.999, 'Exponential moving average weight for label estimation.')
 flags.DEFINE_float(
@@ -155,7 +153,7 @@ def ilr_inv(p):
 # -------------------------------------------------------------------------------------------------
 
 
-def _create_normal(mu, r, mu_ema, num_classes, estimate_delta, labels, exponent):
+def _create_normal(mu, r, mu_ema, num_classes, labels, exponent):
     """
     Utility function for creating a shifted Gaussian distribution in logit space.
 
@@ -164,7 +162,6 @@ def _create_normal(mu, r, mu_ema, num_classes, estimate_delta, labels, exponent)
       r: The rank-1 factor of the scale matrix.
       mu_ema: The predicted mean of the EMA network used to calculate the shift: delta = t - mu_ema.
       num_classes: The number of classes for the dataset, i.e. 10 or 100.
-      estimate_delta: Whether or not we are using an EMA network to estimate Delta. 
       labels: Soft labels from the use of label smoothing.
       exponent: The current step of the optimization, used as exponent scale factor of delta.
     
@@ -178,14 +175,13 @@ def _create_normal(mu, r, mu_ema, num_classes, estimate_delta, labels, exponent)
     diag = tf.ones([tf.shape(mu)[0], num_classes_logits])
     r = tf.reshape(r, [-1, num_classes_logits, 1])
 
-    if estimate_delta:
-        assert labels is not None
-        assert exponent is not None
-        mu_ema = tf.stop_gradient(mu_ema)
-        factor = 1.0-tf.math.pow(FLAGS.alpha, exponent)
+    assert labels is not None
+    assert exponent is not None
+    mu_ema = tf.stop_gradient(mu_ema)
+    factor = 1.0-tf.math.pow(FLAGS.alpha, exponent)
 
-        t = ilr_inv(labels)
-        mean += factor * (t - mu_ema)
+    t = ilr_inv(labels)
+    mean += factor * (t - mu_ema)
 
     return tfd.MultivariateNormalDiagPlusLowRank(loc=mean,
                                                   scale_diag=diag,
@@ -316,20 +312,19 @@ def main(argv):
         sigma = tf.keras.layers.Dense(get_dim_logits(num_classes), activation='linear')(x)
         model = tf.keras.Model(inputs=inputs, outputs=[mu, sigma])
 
-        if FLAGS.estimate_delta:
-            ema = tf.train.ExponentialMovingAverage(decay=FLAGS.beta)
-            inputs = tf.keras.layers.Input(shape=(227, 227, 3))
-            x = InceptionResNetV2(
-                include_top=False,
-                weights=None,
-                input_shape=(227, 227, 3),
-                pooling=None)(inputs)
-            x = tf.keras.layers.GlobalAveragePooling2D(name='avg_pool')(x)
-            x = tf.keras.layers.Flatten()(x)
-            mu = tf.keras.layers.Dense(get_dim_logits(num_classes), activation='linear')(x)
-            sigma = tf.keras.layers.Dense(get_dim_logits(num_classes), activation='linear')(x)
-            model_delta = tf.keras.Model(inputs=inputs, outputs=[mu, sigma])
-            ema.apply(model.trainable_variables)
+        ema = tf.train.ExponentialMovingAverage(decay=FLAGS.beta)
+        inputs = tf.keras.layers.Input(shape=(227, 227, 3))
+        x = InceptionResNetV2(
+            include_top=False,
+            weights=None,
+            input_shape=(227, 227, 3),
+            pooling=None)(inputs)
+        x = tf.keras.layers.GlobalAveragePooling2D(name='avg_pool')(x)
+        x = tf.keras.layers.Flatten()(x)
+        mu = tf.keras.layers.Dense(get_dim_logits(num_classes), activation='linear')(x)
+        sigma = tf.keras.layers.Dense(get_dim_logits(num_classes), activation='linear')(x)
+        model_delta = tf.keras.Model(inputs=inputs, outputs=[mu, sigma])
+        ema.apply(model.trainable_variables)
 
         logging.info('Model input shape: %s', model.input_shape)
         logging.info('Model output shape: %s', model.output_shape)
@@ -388,10 +383,6 @@ def main(argv):
                     tf.keras.metrics.SparseCategoricalAccuracy(),
                 'test/top5accuracy' + suffix:
                     tf.keras.metrics.TopKCategoricalAccuracy(k=5),
-                'test/accuracy_mu' + suffix:
-                    tf.keras.metrics.SparseCategoricalAccuracy(),
-                'test/top5accuracy_mu' + suffix:
-                    tf.keras.metrics.TopKCategoricalAccuracy(k=5),
             })
 
         if validation_dataset:
@@ -401,18 +392,12 @@ def main(argv):
                     'validation/ece' + suffix: rm.metrics.ExpectedCalibrationError(
                         num_bins=FLAGS.num_bins),
                     'validation/accuracy' + suffix: tf.keras.metrics.SparseCategoricalAccuracy(),
-
                     'validation/top5accuracy' + suffix:
-                    tf.keras.metrics.TopKCategoricalAccuracy(k=5),
-                    'validation/accuracy_mu' + suffix: tf.keras.metrics.SparseCategoricalAccuracy(),
-
-                    'validation/top5accuracy_mu' + suffix:
                     tf.keras.metrics.TopKCategoricalAccuracy(k=5),
                 })
 
         checkpoint = tf.train.Checkpoint(model=model, optimizer=optimizer)
-        if FLAGS.estimate_delta:
-          checkpoint_delta = tf.train.Checkpoint(model=model_delta, optimizer=optimizer)
+        checkpoint_delta = tf.train.Checkpoint(model=model_delta, optimizer=optimizer)
         latest_checkpoint = tf.train.latest_checkpoint(FLAGS.output_dir)
         initial_epoch = 0
         if latest_checkpoint:
@@ -448,9 +433,8 @@ def main(argv):
             images, smoothed_targets = augment(images, labels)
 
             # Make predictions with ema model
-            logits_delta, scale_delta = None, None
-            if FLAGS.estimate_delta:
-                logits_delta, scale_delta = model_delta(images, training=True)
+            logits_delta = None
+            logits_delta, _ = model_delta(images, training=True)
 
 
             exponent = tf.cast(epoch, tf.float32) + \
@@ -458,8 +442,7 @@ def main(argv):
             with tf.GradientTape() as tape:
                 logits, scale = model(images, training=True)
 
-                normal = _create_normal(logits, scale, logits_delta, num_classes, FLAGS.estimate_delta,
-                                        smoothed_targets, exponent)
+                normal = _create_normal(logits, scale, logits_delta, num_classes, smoothed_targets, exponent)
 
                 logit_targets = ilr_inv(smoothed_targets)
                 nll_vec = normal.log_prob(logit_targets)
@@ -483,16 +466,14 @@ def main(argv):
             opt_op = optimizer.apply_gradients(
                 zip(grads, model.trainable_variables))
 
-            if FLAGS.estimate_delta:
-                with tf.control_dependencies([opt_op]):
-                    ema.apply(model.trainable_variables)
-                    # Update the weights of the ema model
-                    for v, v_delta in zip(model.trainable_variables, model_delta.trainable_variables):
-                        v_delta.assign(ema.average(v))
+            with tf.control_dependencies([opt_op]):
+                ema.apply(model.trainable_variables)
+                # Update the weights of the ema model
+                for v, v_delta in zip(model.trainable_variables, model_delta.trainable_variables):
+                    v_delta.assign(ema.average(v))
 
 
-            logits_list = [('', logits), ('_delta', logits_delta)
-                           ] if FLAGS.estimate_delta else [('', logits)]
+            logits_list = [('', logits), ('_delta', logits_delta)]
             for suffix, logit in logits_list:
                 probs = ilr_forward(logit)
                 metrics['train/ece' + suffix].add_batch(probs, label=labels)
@@ -530,10 +511,6 @@ def main(argv):
                         suffix].update_state(labels, probs)
                 metrics[f'{dataset_split}/top5accuracy' +
                         suffix].update_state(one_hot_labels, probs)
-                metrics[f'{dataset_split}/accuracy_mu' +
-                        suffix].update_state(labels, probs_mu)
-                metrics[f'{dataset_split}/top5accuracy_mu' +
-                        suffix].update_state(one_hot_labels, probs_mu)
 
         for _ in tf.range(tf.cast(num_steps, tf.int32)):
             strategy.run(step_fn, args=(next(iterator),))
@@ -549,8 +526,8 @@ def main(argv):
             log_dir=os.path.join(FLAGS.output_dir, 'logs'))
         tb_callback.set_model(model)
 
-    models = [model, model_delta] if FLAGS.estimate_delta else [model]
-    suffixes = ['', '_delta'] if FLAGS.estimate_delta else ['']
+    models = [model, model_delta]
+    suffixes = ['', '_delta']
 
 
     best_val = -1.0
@@ -588,8 +565,6 @@ def main(argv):
 
         if epoch == 0 or (epoch+1) % FLAGS.eval_interval == 0 or (epoch+1) >= FLAGS.train_epochs - 5 or FLAGS.eval_only:
 
-            last_epochs = (epoch+1) >= FLAGS.train_epochs - 5
-            eval_epochs = (epoch+1) % 10 == 0
             if validation_dataset:
                 logging.info('Validating on WebVision.')
                 for model_eval, suffix in zip(models, suffixes):
@@ -643,7 +618,7 @@ def main(argv):
                 tf.summary.scalar(name, result, step=epoch + 1)
 
 
-        if best_val < metrics['validation/accuracy_delta'].result():
+        if best_val < metrics['validation/accuracy_delta'].result() and epoch > 75:
           best_val = metrics['validation/accuracy_delta'].result()
           logging.info("Best val acc: %f", best_val)
           checkpoint_name = checkpoint_delta.save(
@@ -664,10 +639,11 @@ def main(argv):
     if not FLAGS.eval_only:
       final_checkpoint_name = checkpoint.save(
           os.path.join(FLAGS.output_dir, 'checkpoint'))
-      if FLAGS.estimate_delta:
-        final_checkpoint_delta_name = checkpoint_delta.save(
+      final_checkpoint_delta_name = checkpoint_delta.save(
           os.path.join(FLAGS.output_dir, 'checkpoint_delta'))
       logging.info('Saved last checkpoint to %s', final_checkpoint_name)
+      logging.info('Saved last delta checkpoint to %s', final_checkpoint_delta_name)
+
     with summary_writer.as_default():
         hp.hparams({
             'base_learning_rate': FLAGS.base_learning_rate,

@@ -574,12 +574,6 @@ def main(argv):
             train_start_time = time.time()
             train_step(train_iterator)
 
-            logging.info(
-                f"min max buffer_u: [{tf.reduce_min(buffer_u):.2E}, {tf.reduce_max(buffer_u):.2E}]")
-
-            logging.info(
-                f"min max buffer_v: [{tf.reduce_min(buffer_v):.2E}, {tf.reduce_max(buffer_v):.2E}]")
-
             ms_per_example = (
                 time.time() - train_start_time) * 1e6 / batch_size
             metrics['train/ms_per_example'].update_state(ms_per_example)

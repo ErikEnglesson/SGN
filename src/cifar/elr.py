@@ -586,9 +586,6 @@ def main(argv):
             assert max_indices < preds_buffer.shape[0], f"there is an error in indexing preds_buffer.shape[0] must be bigger "\
                 f"than max_indices but {preds_buffer.shape[0]}<{max_indices}"
 
-            logging.info("min preds_buffer: %f", tf.reduce_min(preds_buffer))
-            logging.info("max preds_buffer: %f", tf.reduce_max(preds_buffer))
-            # logging.info("max_indices: %d",max_indices) # prints 49999 which is fine.
 
             ms_per_example = (
                 time.time() - train_start_time) * 1e6 / batch_size

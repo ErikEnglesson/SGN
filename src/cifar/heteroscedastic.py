@@ -69,7 +69,7 @@ flags.DEFINE_bool('collect_profile', False,
                   'Whether to trace a profile with tensorboard')
 
 # Heteroscedastic flags.
-flags.DEFINE_integer('num_factors', 6,
+flags.DEFINE_integer('num_factors', 2,
                      'Num factors to approximate full rank covariance matrix.')
 flags.DEFINE_float('temperature', 1.3,
                    'Temperature for heteroscedastic head.')

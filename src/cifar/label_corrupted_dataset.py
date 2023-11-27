@@ -99,8 +99,8 @@ def make_label_corrupted_dataset(dataset_cls: _BaseDatasetClass) -> _BaseDataset
             self.index_map = None
             self.clean_labels = None
             if is_c10 or corruption_type == 'c100noise':
-                paths_labels = './datasets/CIFAR-10_human_ordered.npy' if is_c10 else './datasets/CIFAR-100_human_ordered.npy'
-                paths_indices = './datasets/image_order_c10_inverted.npy' if is_c10 else './datasets/image_order_c100_inverted.npy'
+                paths_labels = './src/cifar/datasets/CIFAR-10_human_ordered.npy' if is_c10 else './src/cifar/datasets/CIFAR-100_human_ordered.npy'
+                paths_indices = './src/cifar/datasets/image_order_c10_inverted.npy' if is_c10 else './src/cifar/datasets/image_order_c100_inverted.npy'
                 noise_file = np.load(paths_labels, allow_pickle=True)
 
                 # Clean labels are used for sanity checks.

@@ -37,7 +37,7 @@ from label_corrupted_dataset import make_label_corrupted_dataset # local file im
 
 from tensorboard.plugins.hparams import api as hp
 
-flags.DEFINE_float('sigma', 0., 'SLN sigma parameter.')
+flags.DEFINE_float('sigma', 0.5, 'SLN sigma parameter.')
 
 flags.DEFINE_float('label_smoothing', 0., 'Label smoothing parameter in [0,1].')
 flags.register_validator('label_smoothing',

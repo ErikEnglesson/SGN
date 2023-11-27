@@ -13,8 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Training with SGN on Clothing 1M with a ResNet-50.
-"""
+"""Training with SGN on Clothing 1M with a ResNet-50."""
 
 import os
 import time
@@ -45,8 +44,6 @@ flags.DEFINE_float('label_smoothing', 0.1, 'Label smoothing parameter in (0,1].'
 flags.register_validator('label_smoothing',
                          lambda ls: ls > 0.0 and ls <= 1.0,
                          message='--label_smoothing must be in (0, 1].')
-flags.DEFINE_bool('estimate_delta', False,
-                  'Whether to have an exponential moving average (EMA) network estimate label noise (delta).')
 flags.DEFINE_float(
     'alpha', 0.7, 'Exponential moving average weight for label estimation.')
 flags.DEFINE_float(
@@ -97,7 +94,7 @@ def ilr_inv(p):
 # -------------------------------------------------------------------------------------------------
 
 
-def _create_normal(mu, r, mu_ema, num_classes, estimate_delta, labels, exponent):
+def _create_normal(mu, r, mu_ema, num_classes, labels, exponent):
     """
     Utility function for creating a shifted Gaussian distribution in logit space.
 
@@ -106,7 +103,6 @@ def _create_normal(mu, r, mu_ema, num_classes, estimate_delta, labels, exponent)
       r: The rank-1 factor of the scale matrix.
       mu_ema: The predicted mean of the EMA network used to calculate the shift: delta = t - mu_ema.
       num_classes: The number of classes for the dataset, i.e. 10 or 100.
-      estimate_delta: Whether or not we are using an EMA network to estimate Delta. 
       labels: Soft labels from the use of label smoothing.
       exponent: The current step of the optimization, used as exponent scale factor of delta.
     
@@ -120,14 +116,13 @@ def _create_normal(mu, r, mu_ema, num_classes, estimate_delta, labels, exponent)
     diag = tf.ones([tf.shape(mu)[0], num_classes_logits])
     r = tf.reshape(r, [-1, num_classes_logits, 1])
 
-    if estimate_delta:
-        assert labels is not None
-        assert exponent is not None
-        mu_ema = tf.stop_gradient(mu_ema)
-        factor = 1.0-tf.math.pow(FLAGS.alpha, exponent)
+    assert labels is not None
+    assert exponent is not None
+    mu_ema = tf.stop_gradient(mu_ema)
+    factor = 1.0-tf.math.pow(FLAGS.alpha, exponent)
 
-        t = ilr_inv(labels)
-        mean += factor * (t - mu_ema)
+    t = ilr_inv(labels)
+    mean += factor * (t - mu_ema)
 
     return tfd.MultivariateNormalDiagPlusLowRank(loc=mean,
                                                   scale_diag=diag,
@@ -273,19 +268,18 @@ def main(argv):
     sigma = tf.keras.layers.Dense(dim_logits,activation='linear')(x) 
     model = tf.keras.Model(inputs=inputs, outputs=[mu, sigma])
 
-    if FLAGS.estimate_delta:
-      ema = tf.train.ExponentialMovingAverage(decay=FLAGS.beta)
+    ema = tf.train.ExponentialMovingAverage(decay=FLAGS.beta)
 
-      inputs = tf.keras.layers.Input(shape=(224,224,3))
-      x = tf.keras.applications.ResNet50(include_top=False,
-                                     input_shape=(224,224,3),
-                                     pooling='avg',
-                                     weights='imagenet')(inputs)
-      x = tf.keras.layers.Flatten()(x)
-      mu = tf.keras.layers.Dense(dim_logits,activation='linear')(x)
-      sigma = tf.keras.layers.Dense(dim_logits,activation='linear')(x) 
-      model_delta = tf.keras.Model(inputs=inputs, outputs=[mu, sigma])
-      ema.apply(model.trainable_variables)
+    inputs = tf.keras.layers.Input(shape=(224,224,3))
+    x = tf.keras.applications.ResNet50(include_top=False,
+                                    input_shape=(224,224,3),
+                                    pooling='avg',
+                                    weights='imagenet')(inputs)
+    x = tf.keras.layers.Flatten()(x)
+    mu = tf.keras.layers.Dense(dim_logits,activation='linear')(x)
+    sigma = tf.keras.layers.Dense(dim_logits,activation='linear')(x) 
+    model_delta = tf.keras.Model(inputs=inputs, outputs=[mu, sigma])
+    ema.apply(model.trainable_variables)
 
 
     logging.info('Model input shape: %s', model.input_shape)
@@ -353,8 +347,7 @@ def main(argv):
       
 
     checkpoint = tf.train.Checkpoint(model=model, optimizer=optimizer)
-    if FLAGS.estimate_delta:
-      checkpoint_delta = tf.train.Checkpoint(model=model_delta, optimizer=optimizer)
+    checkpoint_delta = tf.train.Checkpoint(model=model_delta, optimizer=optimizer)
 
     latest_checkpoint = tf.train.latest_checkpoint(FLAGS.output_dir)
     initial_epoch = 0
@@ -381,8 +374,7 @@ def main(argv):
       smoothed_targets = get_smoothed_onehot(labels, num_classes)
       logit_targets = ilr_inv(smoothed_targets)
 
-      if FLAGS.estimate_delta:
-        loc_ema, _ = model_delta(images, training=True)
+      loc_ema, _ = model_delta(images, training=True)
 
       exponent = tf.cast(epoch, tf.float32) + \
                 tf.cast(step, tf.float32) / steps_per_epoch
@@ -391,8 +383,7 @@ def main(argv):
       with tf.GradientTape() as tape:
         loc, scale = model(images, training=True)
         
-        normal = _create_normal(loc, scale, loc_ema, num_classes, FLAGS.estimate_delta,
-                                smoothed_targets, exponent)
+        normal = _create_normal(loc, scale, loc_ema, num_classes, smoothed_targets, exponent)
 
         nll_vec = normal.log_prob(logit_targets)
         negative_log_likelihood = -tf.reduce_mean(nll_vec)
@@ -414,12 +405,11 @@ def main(argv):
       grads = tape.gradient(scaled_loss, model.trainable_variables)
       opt_op = optimizer.apply_gradients(zip(grads, model.trainable_variables))
 
-      if FLAGS.estimate_delta:
-        with tf.control_dependencies([opt_op]):
-          ema.apply(model.trainable_variables)
-          # Update the weights of the ema model
-          for v, v_delta in zip(model.trainable_variables, model_delta.trainable_variables):
-            v_delta.assign(ema.average(v))
+      with tf.control_dependencies([opt_op]):
+        ema.apply(model.trainable_variables)
+        # Update the weights of the ema model
+        for v, v_delta in zip(model.trainable_variables, model_delta.trainable_variables):
+          v_delta.assign(ema.average(v))
 
       probs = ilr_forward(loc, axis=1)
       metrics['train/ece'].add_batch(probs, label=labels)
@@ -480,8 +470,8 @@ def main(argv):
         log_dir=os.path.join(FLAGS.output_dir, 'logs'))
     tb_callback.set_model(model)
 
-  models = [model, model_delta] if FLAGS.estimate_delta else [model]
-  suffixes = ['', '_delta'] if FLAGS.estimate_delta else ['']
+  models = [model, model_delta]
+  suffixes = ['', '_delta']
 
   for epoch in range(initial_epoch, FLAGS.train_epochs):
     train_iterator = iter(train_dataset)
@@ -564,13 +554,14 @@ def main(argv):
   final_checkpoint_name = checkpoint.save(
       os.path.join(FLAGS.output_dir, 'checkpoint'))
 
-  if FLAGS.estimate_delta:
-     final_checkpoint_delta_name = checkpoint_delta.save(
-     os.path.join(FLAGS.output_dir, 'checkpoint_delta'))
-
+  final_checkpoint_delta_name = checkpoint_delta.save(
+      os.path.join(FLAGS.output_dir, 'checkpoint_delta'))
 
 
   logging.info('Saved last checkpoint to %s', final_checkpoint_name)
+  logging.info('Saved last delta checkpoint to %s', final_checkpoint_delta_name)
+
+
   with summary_writer.as_default():
     hp.hparams({
         'base_learning_rate': FLAGS.base_learning_rate,

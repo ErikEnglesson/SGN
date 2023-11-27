@@ -77,19 +77,10 @@ flags.DEFINE_float('dense_kernel_l2', None,
                    'L2 reg. coefficient for the kernel of the dense layer.')
 flags.DEFINE_float('dense_bias_l2', None,
                    'L2 reg. coefficient for the bias of the dense layer.')
-flags.DEFINE_float('beta', 0.7,
-                   'early learning regularization beta.'
-                   ' for more information refer to '
-                   'https://github.com/shengliu66/ELR'
-                   'default value is taken from'
-                   'https://github.com/shengliu66/ELR/blob/master/ELR/config_cifar10.json')
-
-flags.DEFINE_float('reg_scale', 3.0,
-                   'early learning regularization lambda.'
-                   ' for more information refer to '
-                   'https://github.com/shengliu66/ELR'
-                   'default value is taken from'
-                   'https://github.com/shengliu66/ELR/blob/master/ELR/config_cifar10.json')
+flags.DEFINE_float('alpha', 0.98,
+                   'momentum parameter.')
+flags.DEFINE_float('reg_scale', 10.0,
+                   'regularization scale parameter (lambda in the paper).')
 
 
 flags.DEFINE_bool('collect_profile', False,
@@ -428,8 +419,8 @@ def main(argv):
                 # Update label buffer
                 preds_ = tf.stop_gradient(preds)
                 preds_buffer_update = tf.gather(preds_buffer, indices)
-                preds_buffer_update = FLAGS.beta*preds_buffer_update + \
-                    (1-FLAGS.beta) * preds_
+                preds_buffer_update = FLAGS.alpha*preds_buffer_update + \
+                    (1-FLAGS.alpha) * preds_
                 preds_buffer_update = tf.clip_by_value(
                     preds_buffer_update, 1e-4, 1)
                 indices = tf.expand_dims(indices, axis=1)

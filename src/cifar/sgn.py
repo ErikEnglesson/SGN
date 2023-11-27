@@ -72,8 +72,6 @@ flags.DEFINE_bool('collect_profile', False,
 
 
 # SGN flags
-flags.DEFINE_bool('estimate_delta', False,
-                  'Whether to have an exponential moving average (EMA) network estimate label noise (delta).')
 flags.DEFINE_float(
     'alpha', 0.995, 'Exponential moving average weight for label estimation.')
 flags.DEFINE_float(
@@ -148,7 +146,7 @@ def ilr_inv(p):
 # -------------------------------------------------------------------------------------------------
 
 
-def _create_normal(mu, r, mu_ema, num_classes, estimate_delta, labels, exponent):
+def _create_normal(mu, r, mu_ema, num_classes, labels, exponent):
     """
     Utility function for creating a shifted Gaussian distribution in logit space.
 
@@ -157,7 +155,6 @@ def _create_normal(mu, r, mu_ema, num_classes, estimate_delta, labels, exponent)
       r: The rank-1 factor of the scale matrix.
       mu_ema: The predicted mean of the EMA network used to calculate the shift: delta = t - mu_ema.
       num_classes: The number of classes for the dataset, i.e. 10 or 100.
-      estimate_delta: Whether or not we are using an EMA network to estimate Delta. 
       labels: Soft labels from the use of label smoothing.
       exponent: The current step of the optimization, used as exponent scale factor of delta.
     
@@ -171,14 +168,11 @@ def _create_normal(mu, r, mu_ema, num_classes, estimate_delta, labels, exponent)
     diag = tf.ones([tf.shape(mu)[0], num_classes_logits])
     r = tf.reshape(r, [-1, num_classes_logits, 1])
 
-    if estimate_delta:
-        assert labels is not None
-        assert exponent is not None
-        mu_ema = tf.stop_gradient(mu_ema)
-        factor = 1.0-tf.math.pow(FLAGS.alpha, exponent)
+    mu_ema = tf.stop_gradient(mu_ema)
+    factor = 1.0-tf.math.pow(FLAGS.alpha, exponent)
 
-        t = ilr_inv(labels)
-        mean += factor * (t - mu_ema)
+    t = ilr_inv(labels)
+    mean += factor * (t - mu_ema)
 
     return tfd.MultivariateNormalDiagPlusLowRank(loc=mean,
                                                   scale_diag=diag,
@@ -333,20 +327,20 @@ def main(argv):
       version=2,
       num_factors=1,
       no_scale=False)
-    if FLAGS.estimate_delta:
-      ema = tf.train.ExponentialMovingAverage(decay=FLAGS.beta)
-      model_delta = wide_resnet(
-        input_shape=(32, 32, 3),
-        depth=28,
-        width_multiplier=FLAGS.width,
-        num_classes=dim_logits,
-        l2=FLAGS.l2,
-        hps=_extract_hyperparameter_dictionary(),
-        version=2,
-        num_factors=1,
-        no_scale=False)
 
-        ema.apply(model.trainable_variables)
+    ema = tf.train.ExponentialMovingAverage(decay=FLAGS.beta)
+    model_delta = wide_resnet(
+      input_shape=(32, 32, 3),
+      depth=28,
+      width_multiplier=FLAGS.width,
+      num_classes=dim_logits,
+      l2=FLAGS.l2,
+      hps=_extract_hyperparameter_dictionary(),
+      version=2,
+      num_factors=1,
+      no_scale=False)
+
+    ema.apply(model.trainable_variables)
 
 
 
@@ -435,8 +429,7 @@ def main(argv):
               rm.metrics.ExpectedCalibrationError(num_bins=FLAGS.num_bins))
 
     checkpoint = tf.train.Checkpoint(model=model, optimizer=optimizer)
-    if FLAGS.estimate_delta:
-      checkpoint_delta = tf.train.Checkpoint(model=model_delta, optimizer=optimizer)
+    checkpoint_delta = tf.train.Checkpoint(model=model_delta, optimizer=optimizer)
 
     latest_checkpoint = tf.train.latest_checkpoint(FLAGS.output_dir)
     initial_epoch = 0
@@ -468,8 +461,7 @@ def main(argv):
       smoothed_targets = get_smoothed_onehot(labels, num_classes)
       logit_targets = ilr_inv(smoothed_targets)
 
-      if FLAGS.estimate_delta:
-        loc_ema, _ = model_delta(images, training=True)
+      loc_ema, _ = model_delta(images, training=True)
 
       exponent = tf.cast(epoch, tf.float32) + \
                 tf.cast(step, tf.float32) / steps_per_epoch
@@ -478,7 +470,7 @@ def main(argv):
       with tf.GradientTape(persistent=True) as tape:
         loc, scale = model(images, training=True)
       
-        normal = _create_normal(loc, scale, loc_ema, num_classes, FLAGS.estimate_delta,
+        normal = _create_normal(loc, scale, loc_ema, num_classes,
                                 smoothed_targets, exponent)
 
         ll_vec = normal.log_prob(logit_targets)
@@ -493,12 +485,11 @@ def main(argv):
       grads = tape.gradient(scaled_loss, model.trainable_variables)
       opt_op = optimizer.apply_gradients(zip(grads, model.trainable_variables))
 
-      if FLAGS.estimate_delta:
-        with tf.control_dependencies([opt_op]):
-          ema.apply(model.trainable_variables)
-          # Update the weights of the ema model
-          for v, v_delta in zip(model.trainable_variables, model_delta.trainable_variables):
-            v_delta.assign(ema.average(v))
+      with tf.control_dependencies([opt_op]):
+        ema.apply(model.trainable_variables)
+        # Update the weights of the ema model
+        for v, v_delta in zip(model.trainable_variables, model_delta.trainable_variables):
+          v_delta.assign(ema.average(v))
 
       probs = ilr_forward(loc, axis=1)
       metrics['train/ece'].add_batch(probs, label=labels)
@@ -618,8 +609,8 @@ def main(argv):
         log_dir=os.path.join(FLAGS.output_dir, 'logs'))
     tb_callback.set_model(model)
 
-  models = [model, model_delta] if FLAGS.estimate_delta else [model]
-  suffixes = ['', '_delta'] if FLAGS.estimate_delta else ['']
+  models = [model, model_delta]
+  suffixes = ['', '_delta']
 
   for epoch in range(initial_epoch, FLAGS.train_epochs):
     logging.info('Starting to run epoch: %s', epoch)
