@@ -16,7 +16,8 @@ python src/cifar/sgn.py --data_dir=/path/to/data/ \
                         --output_dir=/path/to/output_dir/ \
                         --dataset cifar100 \
                         --noisy_labels \
-                        --corruption_type sym
+                        --corruption_type sym \
+                        --severity 0.4
 ```
 or on Clothing1M
 ```bash
