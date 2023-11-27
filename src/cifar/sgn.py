@@ -17,7 +17,7 @@
     Most relevant parts of the code are:
     - Implementations of log-ratio transforms, starting on line 119.
     - The function to create a shifted Gaussian distribution on line 149.
-    - The training step function on line 455.
+    - The training step function on line 448.
 
     The code uses and is based on the Uncertainty Baselines GitHub repo:
     https://github.com/google/uncertainty-baselines
