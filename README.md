@@ -8,9 +8,15 @@ Deep neural networks and large-scale datasets have revolutionized the field of m
 Classification via Regression, Loss Reweighting, Label Correction, Robustness, Label Noise, Noisy Labels, Probabilistic Machine Learning, Compositional Data Analysis, Isometric Log-Ratio Transform, Gaussian Likelihood.
 
 ## Environment Setup
-The code uses and is based on the [Uncertainty Baselines GitHub repository](https://github.com/google/uncertainty-baselines), please follow the installation instructions there.
+The code uses and is based on the [Uncertainty Baselines GitHub repository](https://github.com/google/uncertainty-baselines). Our experiments were run with TensorFlow 2.6.0, TensorFlow Probability 0.14.1 and Uncertainty Baselines 0.0.7, on A100 GPUs.
 
-Our experiments were run with TensorFlow 2.6.0, TensorFlow Probability 0.14.1 and Uncertainty Baselines 0.0.7, on A100 GPUs.
+Do the following steps to create an environment with [Mamba](https://mamba.readthedocs.io/en/latest/index.html)
+```
+mamba create -n sgn python=3.9.7
+mamba activate sgn
+CONDA_OVERRIDE_CUDA="11.2" mamba install tensorflow==2.6.0 cudatoolkit=11.2 -c conda-forge
+pip install -r requirements.txt
+```
 
 ## Running Experiments
 For example, the SGN method on CIFAR-100 with 40% symmetric noise, can be run with the following command
@@ -20,7 +26,8 @@ python src/cifar/sgn.py --data_dir=/path/to/data/ \
                         --dataset cifar100 \
                         --noisy_labels \
                         --corruption_type sym \
-                        --severity 0.4
+                        --severity 0.4 \
+                        --download_data
 ```
 or on Clothing1M
 ```bash
